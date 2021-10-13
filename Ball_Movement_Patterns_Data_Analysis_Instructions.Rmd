@@ -1,0 +1,2200 @@
+---
+title: "Ball Movement Data Analysis"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE)
+```
+
+```{css,  eval=TRUE, echo=FALSE}
+
+.tocify-header {
+  text-indent: initial;
+}
+
+.tocify-subheader > .tocify-item {
+  text-indent: initial;
+  padding-left: 20px;
+}
+
+
+```
+
+### IMPORT DATA
+```{r load packages}
+# load packages #
+library(plyr)
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(stringr)
+library(writexl)
+library(hms)
+library(desc)
+library(knitr)
+```
+
+#### 1. IMPORT DATA
+##### Import raw data files, separate name file column and add game detail columns
+```{r bind data ep}
+# list all files with ext xlsx #
+files <- list.files(path = "Data/Raw Data Women/Attack", pattern = "*.xlsx", full.names = T)
+
+# import files from list (columns as characters) and bind to form one large database of games #
+game <- sapply(files, read_excel, simplify = FALSE, col_types = "text") %>%
+  bind_rows(.id = "id")
+
+# separate file name column into match number, home and away team, numbers = number of words in file path (eg. Data, Raw, Data, Women, Attack) #
+game <- separate(game, id, c("1", "2", "3", "4", "5", "Match", "Home_T", "vs", "Away_T"))
+
+# separate row names from sportscode into team, gender and extras #
+game <- separate(game, category, c("Team", "Gender", "A", "B", "C"))
+
+# add new column with Opposition and match_number_team #
+game <- mutate(game, Opposition = ifelse(game$Team == game$Home_T, game$Away_T, game$Home_T)) 
+
+# add new column with match_number_team #
+game <- unite(game, Match_Team, c(Match, Team, Opposition), remove = FALSE)
+
+game2 <- head(game)
+knitr::kable(game2[, 7:15], caption = "Tidied Data")
+```
+
+#### 2. TIDY DATA
+##### Extract passing rows, select and rename descriptive columns, calcutate time per movement and rename and reorder cell locations
+```{r pass function}
+pass_f <- function(x){
+# extract from all data (Game) rows referring to Passing and save as separate data frame (pass) #
+pass <- filter(x, A == "Passing" & is.na(B))
+
+# rename columns #
+pass <- plyr::rename(pass, c("start time" = "start_time", 
+                             "end time" = "end_time",
+                             "descriptors..." = "Start", 
+                             "...7" = "End", 
+                             "...8" = "Match.Status", 
+                             "...9" = "Match.Location", 
+                             "...10" = "Quality.Opp", 
+                             "...11" = "Outcome_1", 
+                             "...12" = "Outcome_2",
+                             "...13" = "Outcome_3"))
+
+# remove unnecessary columns #
+pass <- select(pass, start_time, end_time, Match_Team,  Team, Opposition, Gender, Start, End, Outcome_1, Outcome_2, Outcome_3, Match.Status, Match.Location, Quality.Opp )
+
+# convert start and end time columns to time class #
+pass$start_time <- as.POSIXct(pass$start_time, format = "%H:%M:%S")
+pass$end_time <- as.POSIXct(pass$end_time, format = "%H:%M:%S")
+
+# add new column from time difference #
+pass <- mutate(pass, Time = (end_time - start_time))
+
+# transform time to numeric #
+pass$Time <- as.numeric(pass$Time)
+
+# add 0 to first 9 numbers then reorder # 
+pass$Start <- as.factor(pass$Start) %>%
+  revalue(c("1" = "01", 
+            "2" = "02", 
+            "3" ="03", 
+            "4" = "04", 
+            "5" ="05", 
+            "6" = "06", 
+            "7" = "07", 
+            "8" = "08", 
+            "9" = "09"))
+
+pass$Start <- factor(pass$Start, levels = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40"))
+
+pass$End <- as.factor(pass$End) %>%
+  revalue(c("1" = "01", 
+            "2" = "02", 
+            "3" ="03", 
+            "4" = "04", 
+            "5" ="05", 
+            "6" = "06", 
+            "7" = "07", 
+            "8" = "08", 
+            "9" = "09"))
+
+pass$End <- factor(pass$End, levels = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40"))
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+pass <- pass %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "DeepAtt",
+      Start %in% build_att ~ "BuildAtt",
+      Start %in% build_def ~ "BuildDef",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "DeepDef"
+    )
+  )
+
+
+return(pass)
+}
+
+pass <- pass_f(game)
+
+```
+
+### ENTROPY
+#### 3. SPLIT INTO MATCH PER TEAM
+#####  Separate games per team per start location to identify each teams ball movement strategies
+```{r split e}
+# create data frame per team per match per start location #
+e_pass_list <- split(pass, list(pass$Match_Team, pass$Start))
+```
+
+#### 4. FILTER MATCH STATUS
+##### Extract rows per team per match status
+```{r filter e}
+# select game context to analyse #
+win <- list()
+for (i in seq_along(e_pass_list)){
+win[[i]] <- filter(e_pass_list[[i]], Match.Status == "Winning" )
+}
+
+lose <- list()
+for (i in seq_along(e_pass_list)){
+lose[[i]] <- filter(e_pass_list[[i]], Match.Status == "Losing" )
+}
+
+draw <- list()
+for (i in seq_along(e_pass_list)){
+draw[[i]] <- filter(e_pass_list[[i]], Match.Status == "Drawing" )
+}
+
+```
+
+#### 5. CALCULATE ENTROPY WHEN WINNING
+##### Calculate entropy per start location per team per match
+```{r e win}
+# entropy calculation #
+entropy <- function(x){
+  freq <- table(x)/nrow(x)
+  vec <- as.data.frame(freq)[,2]
+  vec <- vec[vec>0]
+  -sum(vec * log(vec))
+}
+
+# calculate entropy per start location per team per match #
+e <- list()
+e_all <- list()
+for (i in seq_along(win)){
+e[[i]] <- entropy(win[[i]][,8])
+e_all[[i]] <- as.data.frame(unlist(e[[i]]))
+e_all[[i]] <- rename(e_all[[i]],  "Entropy" = "unlist(e[[i]])")
+}
+
+# add game details #
+game_names <- names(e_pass_list)
+for (i in seq_along(game_names)){
+  e_all[[i]]$Match_ID <- game_names[i]
+  e_all[[i]] <- separate(e_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  e_all[[i]]$MS <- "Winning"
+}
+```
+
+##### Add attack zones and join teams into one
+```{r entropy zones win}
+
+entropy_zones <- list()
+for (i in seq_along(e_all)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+entropy_zones[[i]] <- e_all[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+entropy_zones[[i]]$Start <- as.factor(entropy_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3", 
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+entropy_zones[[i]] <- separate(entropy_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+e_win_zones <- bind_rows(entropy_zones)
+```
+
+##### Calculate average entropy per attacking zone
+```{r sum e win}
+
+# calculate mean entropy per attack zone #
+e_win_sum <- e_win_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Entropy, mean, na.rm = TRUE))
+
+```
+
+#### 6. CALCULATE ENTROPY WHEN LOSING
+##### Calculate entropy per start location per team per match
+```{r e lose}
+# entropy calculation #
+entropy <- function(x){
+  freq <- table(x)/nrow(x)
+  vec <- as.data.frame(freq)[,2]
+  vec <- vec[vec>0]
+  -sum(vec * log(vec))
+}
+
+# calculate entropy per start location per team per match #
+e <- list()
+e_all <- list()
+for (i in seq_along(lose)){
+e[[i]] <- entropy(lose[[i]][,8])
+e_all[[i]] <- as.data.frame(unlist(e[[i]]))
+e_all[[i]] <- rename(e_all[[i]],  "Entropy" = "unlist(e[[i]])")
+}
+
+# add game details #
+game_names <- names(e_pass_list)
+for (i in seq_along(game_names)){
+  e_all[[i]]$Match_ID <- game_names[i]
+  e_all[[i]] <- separate(e_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  e_all[[i]]$MS <- "Losing"
+}
+```
+
+##### Add attack zones and join teams into one
+```{r entropy zones lose}
+
+entropy_zones <- list()
+for (i in seq_along(e_all)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+entropy_zones[[i]] <- e_all[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+entropy_zones[[i]]$Start <- as.factor(entropy_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3",
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+entropy_zones[[i]] <- separate(entropy_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+e_lose_zones <- bind_rows(entropy_zones)
+```
+
+##### Calculate average entropy per attacking zone
+```{r sum e lose}
+# calculate mean entropy per attack zone #
+e_lose_sum <- e_lose_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Entropy, mean, na.rm = TRUE))
+
+```
+
+#### 7. CALCULATE ENTROPY WHEN DRAWING
+##### Calculate entropy per start location per team per match
+```{r e draw}
+# entropy calculation #
+entropy <- function(x){
+  freq <- table(x)/nrow(x)
+  vec <- as.data.frame(freq)[,2]
+  vec <- vec[vec>0]
+  -sum(vec * log(vec))
+}
+
+# calculate entropy per start location per team per match #
+e <- list()
+e_all <- list()
+for (i in seq_along(draw)){
+e[[i]] <- entropy(draw[[i]][,8])
+e_all[[i]] <- as.data.frame(unlist(e[[i]]))
+e_all[[i]] <- rename(e_all[[i]],  "Entropy" = "unlist(e[[i]])")
+}
+
+# add game details #
+game_names <- names(e_pass_list)
+for (i in seq_along(game_names)){
+  e_all[[i]]$Match_ID <- game_names[i]
+  e_all[[i]] <- separate(e_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  e_all[[i]]$MS <- "Drawing"
+}
+```
+
+##### Add attack zones and join teams into one
+```{r entropy zones draw}
+entropy_zones <- list()
+for (i in seq_along(e_all)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+entropy_zones[[i]] <- e_all[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+entropy_zones[[i]]$Start <- as.factor(entropy_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3", 
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+entropy_zones[[i]] <- separate(entropy_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+e_draw_zones <- bind_rows(entropy_zones)
+```
+
+##### Calculate average entropy per attacking zone
+```{r sum e draw}
+# calculate mean entropy per attack zone #
+e_draw_sum <- e_draw_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Entropy, mean, na.rm = TRUE))
+
+```
+
+#### 8. JOIN MATCH STATUS
+##### Join match status data frames for entropy to create ball movement profiles
+```{r wide e}
+# join entropy match status into one #
+e_ms <- bind_rows(e_win_sum, e_lose_sum, e_draw_sum)
+
+#transform from long to wide #
+e_ms <- e_ms %>%
+  pivot_wider(names_from = Attack_Zone,
+              values_from = Entropy)
+
+e_ms2 <- head(e_ms)
+knitr::kable(e_ms2[, 1:6], caption = "Entropy per Match Data")
+```
+
+#### 9. EXPORT DATA
+##### Join attack zone per match status entropy data frames into one and calculate team averages per start location
+```{r app data e}
+# join attack zone match status entropy into one #
+e_all <- bind_rows(e_win_zones, e_lose_zones, e_draw_zones)
+
+# calculate average per team per start location #
+e_all <- e_all%>%
+  group_by(Team, MS, Start.y, Start.x) %>%
+  summarise(across(Entropy, mean, na.rm = TRUE))
+
+# save data frame #
+write_xlsx(e_all, "Data/Processed Data//Game_Entropy_Women.xlsx")
+
+e_all2 <- head(e_all)
+knitr::kable(e_all2, caption = "Team Averages Entropy Data")
+
+```
+##### Join attack zone per match status entropy data frames into one and calculate opposition averages per start location
+```{r app data opp e}
+# join attack zone match status entropy into one #
+e_all_opp <- bind_rows(e_win_zones, e_lose_zones, e_draw_zones)
+
+# calculate average per team per start location #
+e_all_opp <- e_all_opp %>%
+  group_by(Opposition, MS, Start.y, Start.x) %>%
+  summarise(across(Entropy, mean, na.rm = TRUE))
+
+# rename opposition to team #
+e_all_opp <- rename(e_all_opp, "Team" = "Opposition")
+
+# switch match status from opposition to team perspective #
+e_all_opp <- ungroup(e_all_opp)
+e_all_opp <- mutate(e_all_opp, ms = ifelse(e_all_opp$MS == "Winning", "Losing", NA))
+e_all_opp <- mutate(e_all_opp, ms = ifelse(e_all_opp$MS == "Losing", "Winning", e_all_opp$ms))
+e_all_opp <- mutate(e_all_opp, ms = ifelse(e_all_opp$MS == "Drawing", "Drawing", e_all_opp$ms))
+
+# select columns for analysis #
+e_all_opp <- select(e_all_opp, Team, ms, Start.x, Start.y, Entropy)
+
+# rename ms #
+e_all_opp <- rename(e_all_opp, "MS" = "ms")
+
+# save data frame #
+write_xlsx(e_all_opp, "Data/Processed Data//Opp_Game_Entropy_Women.xlsx")
+
+e_all_opp2 <- head(e_all_opp)
+knitr::kable(e_all_opp2, caption = "Opposition Averages Entropy Data")
+
+```
+
+### POSSESSION
+#### 10. SPLIT INTO MATCH PER TEAM
+#####  Separate games per team per start location to identify each teams ball movement strategies
+```{r split p}
+# create data frame per team per match per start location #
+p_pass_list <- split(pass, list(pass$Match_Team, pass$Start))
+```
+
+#### 11. FILTER MATCH STATUS
+##### Extract rows per team per match status
+```{r filter p}
+# select game context to analyse #
+win <- list()
+for (i in seq_along(p_pass_list)){
+win[[i]] <- filter(p_pass_list[[i]], Match.Status == "Winning" )
+}
+
+lose <- list()
+for (i in seq_along(p_pass_list)){
+lose[[i]] <- filter(p_pass_list[[i]], Match.Status == "Losing" )
+}
+
+draw <- list()
+for (i in seq_along(p_pass_list)){
+draw[[i]] <- filter(p_pass_list[[i]], Match.Status == "Drawing" )
+}
+
+```
+
+#### 12. CALCULATE POSSESSION WHEN WINNING
+##### Calculate percentage of time in each start location by dividing location time by total time
+```{r time win}
+# using start locations per team lists, calculate total time per start location #
+time <- list()
+time_all <- list()
+for (i in seq_along(win)){
+time[[i]] <- colSums(win[[i]][, 15])
+# bind start locations rows into one data frame and rename column #
+time_all[[i]] <- as.data.frame(unlist(time[[i]]))
+time_all[[i]] <- rename(time_all[[i]], "Time" = "unlist(time[[i]])")
+}
+
+# add game details #
+game_names <- names(p_pass_list)
+for (i in seq_along(game_names)){
+  time_all[[i]]$Match_ID <- game_names[i]
+  time_all[[i]] <- separate(time_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  time_all[[i]]$MS <- "Winning"
+}
+
+# join start locations into one #
+time_all <- bind_rows(time_all)
+
+# split per match per team #
+time_match <- split(time_all, list(time_all$Match, time_all$Team))
+
+# convert to percentage by calculating total time per match #
+col <- list()
+for (i in seq_along(time_match)){
+  col[[i]] <- as.data.frame(summarise(time_match[[i]], across(Time, sum)))
+  time_match[[i]] <- bind_cols(time_match[[i]], col[[i]])
+  time_match[[i]] <- mutate(time_match[[i]], Percent = (Time...1/Time...7)*100)
+  time_match[[i]] <- select(time_match[[i]], Match, Team, Opposition, Start, MS, Percent)
+}
+
+```
+
+##### Add attack zones and join teams into one
+```{r time zones win}
+time_zones <- list()
+for (i in seq_along(time_match)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+time_zones[[i]] <- time_match[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+time_zones[[i]]$Start <- as.factor(time_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1",
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3", 
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+time_zones[[i]] <- separate(time_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+time_win_zones <- bind_rows(time_zones)
+```
+
+##### Calculate average possession per attacking zone
+```{r sum time win}
+# calculate mean possession per attack zone #
+time_win_sum <- time_win_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Percent, sum, na.rm = TRUE))
+
+```
+
+#### 13. CALCULATE POSSESSION WHEN LOSING
+##### Calculate percentage of time in each start location by dividing location time by total time
+```{r time lose}
+# using start locations per team lists, calculate total time per start location #
+time <- list()
+time_all <- list()
+for (i in seq_along(lose)){
+time[[i]] <- colSums(lose[[i]][, 15])
+# bind start locations rows into one data frame and rename column #
+time_all[[i]] <- as.data.frame(unlist(time[[i]]))
+time_all[[i]] <- rename(time_all[[i]], "Time" = "unlist(time[[i]])")
+}
+
+# add game details #
+game_names <- names(p_pass_list)
+for (i in seq_along(game_names)){
+  time_all[[i]]$Match_ID <- game_names[i]
+  time_all[[i]] <- separate(time_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  time_all[[i]]$MS <- "Losing"
+}
+
+# join start locations into one #
+time_all <- bind_rows(time_all)
+
+# split per match per team #
+time_match <- split(time_all, list(time_all$Match, time_all$Team))
+
+# convert to percentage by calculating total time per match #
+col <- list()
+for (i in seq_along(time_match)){
+  col[[i]] <- as.data.frame(summarise(time_match[[i]], across(Time, sum)))
+  time_match[[i]] <- bind_cols(time_match[[i]], col[[i]])
+  time_match[[i]] <- mutate(time_match[[i]], Percent = (Time...1/Time...7)*100)
+  time_match[[i]] <- select(time_match[[i]], Match, Team, Opposition, Start, MS, Percent)
+}
+
+```
+
+##### Add attack zones and join teams into one
+```{r time zones lose}
+time_zones <- list()
+for (i in seq_along(time_match)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+time_zones[[i]] <- time_match[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+time_zones[[i]]$Start <- as.factor(time_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1",
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3", 
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+time_zones[[i]] <- separate(time_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+time_lose_zones <- bind_rows(time_zones)
+```
+
+##### Calculate average possession per attacking zone
+```{r sum time lose}
+# calculate mean possession per attack zone #
+time_lose_sum <- time_lose_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Percent, sum, na.rm = TRUE))
+
+```
+
+#### 14. CALCULATE POSSESSION WHEN DRAWING
+##### Calculate percentage of time in each start location by dividing location time by total time
+```{r time draw}
+# using start locations per team lists, calculate total time per start location #
+time <- list()
+time_all <- list()
+for (i in seq_along(draw)){
+time[[i]] <- colSums(draw[[i]][, 15])
+# bind start locations rows into one data frame and rename column #
+time_all[[i]] <- as.data.frame(unlist(time[[i]]))
+time_all[[i]] <- rename(time_all[[i]], "Time" = "unlist(time[[i]])")
+}
+
+# add game details #
+game_names <- names(p_pass_list)
+for (i in seq_along(game_names)){
+  time_all[[i]]$Match_ID <- game_names[i]
+  time_all[[i]] <- separate(time_all[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  time_all[[i]]$MS <- "Drawing"
+}
+
+# join start locations into one #
+time_all <- bind_rows(time_all)
+
+# split per match per team #
+time_match <- split(time_all, list(time_all$Match, time_all$Team))
+
+# convert to percentage by calculating total time per match #
+col <- list()
+for (i in seq_along(time_match)){
+  col[[i]] <- as.data.frame(summarise(time_match[[i]], across(Time, sum)))
+  time_match[[i]] <- bind_cols(time_match[[i]], col[[i]])
+  time_match[[i]] <- mutate(time_match[[i]], Percent = (Time...1/Time...7)*100)
+  time_match[[i]] <- select(time_match[[i]], Match, Team, Opposition, Start, MS, Percent)
+}
+
+```
+
+##### Add attack zones and join teams into one
+```{r time zones draw}
+time_zones <- list()
+for (i in seq_along(time_match)){
+
+# Attack Zones #
+corners <- c("01", "05")
+circle <- c("02", "03", "04")
+deep_att <- c("07", "08", "09", "12", "13", "14")
+build_att <- c("06", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+time_zones[[i]] <- time_match[[i]] %>%
+  mutate(
+    Attack_Zone = case_when(
+      Start %in% corners ~ "Corners",
+      Start %in% circle ~ "Circle",
+      Start %in% deep_att ~ "Deep_Att",
+      Start %in% build_att ~ "Build_Att",
+      Start %in% build_def ~ "Build_Def",
+      Start %in% outlet ~ "Outlet",
+      Start %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+time_zones[[i]]$Start <- as.factor(time_zones[[i]]$Start) %>%
+  revalue(c("01" = "8_1", 
+            "02" = "8_2", 
+            "03" = "8_3", 
+            "04" = "8_4", 
+            "05" = "8_5", 
+            "06" = "7_1", 
+            "07" = "7_2", 
+            "08" = "7_3", 
+            "09" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1",
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2", 
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3", 
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4", 
+            "40" = "1_5"))
+
+# separate start locations into x and y #
+time_zones[[i]] <- separate(time_zones[[i]], Start, c("Start.y", "Start.x"))
+}
+
+# join all match per team lists into a data frame #
+time_draw_zones <- bind_rows(time_zones)
+```
+
+##### Calculate average possession per attacking zone
+```{r sum time draw}
+# calculate mean possession per attack zone #
+time_draw_sum <- time_draw_zones %>%
+  group_by(Match, Team, Opposition, MS, Attack_Zone) %>%
+  summarise(across(Percent, sum, na.rm = TRUE))
+
+```
+
+#### 15. JOIN MATCH STATUS
+##### Join match status data frames for possession to create ball movement profiles
+```{r wide p}
+# join possession match status into one #
+time_ms <- bind_rows(time_win_sum, time_lose_sum, time_draw_sum)
+
+# transform from long to wide #
+time_ms <- time_ms %>%
+  pivot_wider(names_from = Attack_Zone,
+              values_from = Percent)
+
+time_ms2 <- head(time_ms)
+knitr::kable(time_ms2[, 1:6], caption = "Possession per Match Data")
+```
+
+#### 16. EXPORT DATA
+##### Join attack zone per match status possession data frames into one and calculate team averages per start location
+```{r app data p}
+# join attack zone match status possession into one #
+time_all <- bind_rows(time_win_zones, time_lose_zones, time_draw_zones)
+
+# calculate average per team per start location #
+time_all <- time_all%>%
+  group_by(Team, MS, Start.y, Start.x) %>%
+  summarise(across(Percent, mean, na.rm = TRUE))
+
+# save data frame #
+write_xlsx(time_all, "Data/Processed Data//Game_Heat_Maps_Women.xlsx")
+
+time_all2 <- head(time_all)
+knitr::kable(time_all2, caption = "Team Averages Possession Data")
+```
+##### Join attack zone per match status possession data frames into one and calculate opposition averages per start location
+```{r app data opp p}
+# join attack zone match status possession into one #
+time_all_opp <- bind_rows(time_win_zones, time_lose_zones, time_draw_zones)
+
+# calculate average per team per start location #
+time_all_opp <- time_all_opp %>%
+  group_by(Opposition, MS, Start.y, Start.x) %>%
+  summarise(across(Percent, mean, na.rm = TRUE))
+
+# rename opposition to team #
+time_all_opp <- rename(time_all_opp, "Team" = "Opposition")
+
+# switch match status from opposition to team perspective #
+time_all_opp <- ungroup(time_all_opp)
+time_all_opp <- mutate(time_all_opp, ms = ifelse(time_all_opp$MS == "Winning", "Losing", NA))
+time_all_opp <- mutate(time_all_opp, ms = ifelse(time_all_opp$MS == "Losing", "Winning", time_all_opp$ms))
+time_all_opp <- mutate(time_all_opp, ms = ifelse(time_all_opp$MS == "Drawing", "Drawing", time_all_opp$ms))
+
+# select columns for analysis #
+time_all_opp <- select(time_all_opp, Team, ms, Start.x, Start.y, Percent)
+
+# rename ms #
+time_all_opp <- rename(time_all_opp, "MS" = "ms")
+
+# save data frame #
+write_xlsx(time_all_opp, "Data/Processed Data//Opp_Game_Heat_Maps_Women.xlsx")
+
+time_all_opp2 <- head(time_all_opp)
+knitr::kable(time_all_opp2, caption = "Opposition Averages Possession Data")
+```
+
+### PROGRESSION RATES
+#### 17. SPLIT INTO MATCH PER TEAM
+#####  Separate games per team to identify each teams ball movement strategies
+```{r split pr}
+# create data frame per team per match #
+pr_pass_list <- split(pass, list(pass$Match_Team, pass$Attack_Zone))
+
+```
+
+#### 18. FILTER MATCH STATUS
+##### Extract rows per team per match status
+```{r filter pr}
+# select game context to analyse #
+win <- list()
+for (i in seq_along(pr_pass_list)){
+win[[i]] <- filter(pr_pass_list[[i]], Match.Status == "Winning" )
+}
+
+lose <- list()
+for (i in seq_along(pr_pass_list)){
+lose[[i]] <- filter(pr_pass_list[[i]], Match.Status == "Losing" )
+}
+
+draw <- list()
+for (i in seq_along(pr_pass_list)){
+draw[[i]] <- filter(pr_pass_list[[i]], Match.Status == "Drawing" )
+}
+
+```
+
+#### 19. CALCULATE WINNING END LOCATION PERCENTAGES
+##### Calculate percentage of ball movements ending in each location from each start location when winning
+```{r x_y function win}
+x_y_e_f <- function(x){
+
+# create table showing relationships between start and end locations #
+x_y_e_table <- table(x$End, x$Attack_Zone)
+
+# convert to data frame #
+x_y_e_table <- as.data.frame.matrix(x_y_e_table)
+
+# calculate total entries per end location #
+x_y_e_table$Total <- rowSums(x_y_e_table)
+
+# calculate total entries per start location #
+col <- as.data.frame(summarise(x_y_e_table, across(where(is.numeric), sum)))
+
+# select column with total entries (all rows) #
+col <- select(col, Total)
+
+# convert to percent by dividing row total by column total #
+x_y_e_table <- mutate(x_y_e_table, Percent = (Total/col$Total)*100)
+
+# make row names a column #
+x_y_e_table <- tibble:: rownames_to_column(x_y_e_table, var = "End")
+
+# Attack Zones #
+corners <- c("1", "5")
+circle <- c("2", "3", "4")
+deep_att <- c("7", "8", "9", "12", "13", "14")
+build_att <- c("6", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+x_y_e_table <- x_y_e_table %>%
+  mutate(
+    Attack_Zone = case_when(
+      End %in% corners ~ "Corners",
+      End %in% circle ~ "Circle",
+      End %in% deep_att ~ "Deep_Att",
+      End %in% build_att ~ "Build_Att",
+      End %in% build_def ~ "Build_Def",
+      End %in% outlet ~ "Outlet",
+      End %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+x_y_e_table$End <- as.factor(x_y_e_table$End) %>%
+  revalue(c("1" = "8_1", 
+            "2" = "8_2", 
+            "3" = "8_3", 
+            "4" = "8_4", 
+            "5" = "8_5", 
+            "6" = "7_1", 
+            "7" = "7_2", 
+            "8" = "7_3", 
+            "9" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2",
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3",
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4",
+            "40" = "1_5"))
+
+# separate end locations into x and y #
+x_y_e_table <- separate(x_y_e_table, End, c("End.y", "End.x"))
+
+
+
+return(x_y_e_table)
+}
+
+end_list <- list()
+for (i in seq_along(win)){
+  end_list[[i]] <- x_y_e_f(win[[i]])
+}
+```
+
+##### Add game details and join teams into one
+```{r dets win}
+# add game details #
+game_names <- names(pr_pass_list)
+for (i in seq_along(game_names)){
+  end_list[[i]]$Match_ID <- game_names[i]
+  end_list[[i]] <- separate(end_list[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  end_list[[i]]$MS <- "Winning"
+}
+
+# join all match per team lists into one data frame #
+end_win <- bind_rows(end_list)
+```
+
+##### Calculate percentage of ball movements ending in each attack zone from each start attack zone when winning
+```{r e win sum}
+# calculate average end attack zone per start attack zone #
+end_win_sum <- end_win %>%
+    group_by(Match, Team, Opposition, MS, Start, Attack_Zone) %>%
+    summarise(across(Percent, sum, na.rm = TRUE))
+```
+
+
+#### 20. CALCULATE LOSING END LOCATION PERCENTAGES
+##### Calculate percentage of ball movements ending in each location from each start location when losing
+```{r x_y function lose}
+x_y_e_f <- function(x){
+
+# create table showing relationships between start and end locations #
+x_y_e_table <- table(x$End, x$Attack_Zone)
+
+# convert to data frame #
+x_y_e_table <- as.data.frame.matrix(x_y_e_table)
+
+# calculate total entries per end location #
+x_y_e_table$Total <- rowSums(x_y_e_table)
+
+# calculate total entries per start location #
+col <- as.data.frame(summarise(x_y_e_table, across(where(is.numeric), sum)))
+
+# select column with total entries (all rows) #
+col <- select(col, Total)
+
+# convert to percent by dividing row total by column total #
+x_y_e_table <- mutate(x_y_e_table, Percent = (Total/col$Total)*100)
+
+# make row names a column #
+x_y_e_table <- tibble:: rownames_to_column(x_y_e_table, var = "End")
+
+# Attack Zones #
+corners <- c("1", "5")
+circle <- c("2", "3", "4")
+deep_att <- c("7", "8", "9", "12", "13", "14")
+build_att <- c("6", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+x_y_e_table <- x_y_e_table %>%
+  mutate(
+    Attack_Zone = case_when(
+      End %in% corners ~ "Corners",
+      End %in% circle ~ "Circle",
+      End %in% deep_att ~ "Deep_Att",
+      End %in% build_att ~ "Build_Att",
+      End %in% build_def ~ "Build_Def",
+      End %in% outlet ~ "Outlet",
+      End %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+x_y_e_table$End <- as.factor(x_y_e_table$End) %>%
+  revalue(c("1" = "8_1", 
+            "2" = "8_2", 
+            "3" = "8_3", 
+            "4" = "8_4", 
+            "5" = "8_5", 
+            "6" = "7_1", 
+            "7" = "7_2", 
+            "8" = "7_3", 
+            "9" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2",
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3",
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4",
+            "40" = "1_5"))
+
+# separate end locations into x and y #
+x_y_e_table <- separate(x_y_e_table, End, c("End.y", "End.x"))
+
+
+
+return(x_y_e_table)
+}
+
+end_list <- list()
+for (i in seq_along(lose)){
+  end_list[[i]] <- x_y_e_f(lose[[i]])
+}
+```
+
+##### Add game details and join teams into one
+```{r dets lose}
+# add game details #
+game_names <- names(pr_pass_list)
+for (i in seq_along(game_names)){
+  end_list[[i]]$Match_ID <- game_names[i]
+  end_list[[i]] <- separate(end_list[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  end_list[[i]]$MS <- "Losing"
+}
+
+# join all match per team lists into one data frame #
+end_lose <- bind_rows(end_list)
+```
+
+##### Calculate percentage of ball movements ending in each attack zone from each start attack zone when losing
+```{r e lose sum}
+# calculate average end attack zone per start attack zone #
+end_lose_sum <- end_lose %>%
+    group_by(Match, Team, Opposition, MS, Start, Attack_Zone) %>%
+    summarise(across(Percent, sum, na.rm = TRUE))
+```
+
+
+#### 21. CALCULATE DRAWING END LOCATION PERCENTAGES
+##### Calculate percentage of ball movements ending in each location from each start location when drawing
+```{r x_y function draw}
+x_y_e_f <- function(x){
+
+# create table showing relationships between start and end locations #
+x_y_e_table <- table(x$End, x$Attack_Zone)
+
+# convert to data frame #
+x_y_e_table <- as.data.frame.matrix(x_y_e_table)
+
+# calculate total entries per end location #
+x_y_e_table$Total <- rowSums(x_y_e_table)
+
+# calculate total entries per start location #
+col <- as.data.frame(summarise(x_y_e_table, across(where(is.numeric), sum)))
+
+# select column with total entries (all rows) #
+col <- select(col, Total)
+
+# convert to percent by dividing row total by column total #
+x_y_e_table <- mutate(x_y_e_table, Percent = (Total/col$Total)*100)
+
+# make row names a column #
+x_y_e_table <- tibble:: rownames_to_column(x_y_e_table, var = "End")
+
+# Attack Zones #
+corners <- c("1", "5")
+circle <- c("2", "3", "4")
+deep_att <- c("7", "8", "9", "12", "13", "14")
+build_att <- c("6", "10", "11", "15", "16", "17", "18", "19", "20")
+build_def <- c("21", "22", "23", "24", "25", "27", "28", "29")
+outlet <- c("26", "30", "31", "32", "33", "34", "35")
+deep_def <- c("36", "37", "38", "39", "40") 
+
+# add new column identifying attack zone #
+x_y_e_table <- x_y_e_table %>%
+  mutate(
+    Attack_Zone = case_when(
+      End %in% corners ~ "Corners",
+      End %in% circle ~ "Circle",
+      End %in% deep_att ~ "Deep_Att",
+      End %in% build_att ~ "Build_Att",
+      End %in% build_def ~ "Build_Def",
+      End %in% outlet ~ "Outlet",
+      End %in% deep_def ~ "Deep_Def"
+    )
+  )
+
+# change to x y coordinates #
+x_y_e_table$End <- as.factor(x_y_e_table$End) %>%
+  revalue(c("1" = "8_1", 
+            "2" = "8_2", 
+            "3" = "8_3", 
+            "4" = "8_4", 
+            "5" = "8_5", 
+            "6" = "7_1", 
+            "7" = "7_2", 
+            "8" = "7_3", 
+            "9" = "7_4", 
+            "10" = "7_5", 
+            "11" = "6_1", 
+            "12" = "6_2", 
+            "13" = "6_3", 
+            "14" = "6_4", 
+            "15" = "6_5", 
+            "16" = "5_1", 
+            "17" = "5_2",
+            "18" = "5_3", 
+            "19" = "5_4", 
+            "20" = "5_5", 
+            "21" = "4_1", 
+            "22" = "4_2", 
+            "23" = "4_3", 
+            "24" = "4_4", 
+            "25" = "4_5", 
+            "26" = "3_1", 
+            "27" = "3_2", 
+            "28" = "3_3",
+            "29" = "3_4", 
+            "30" = "3_5", 
+            "31" = "2_1", 
+            "32" = "2_2", 
+            "33" = "2_3", 
+            "34" = "2_4", 
+            "35" = "2_5", 
+            "36" = "1_1", 
+            "37" = "1_2", 
+            "38" = "1_3", 
+            "39" = "1_4",
+            "40" = "1_5"))
+
+# separate end locations into x and y #
+x_y_e_table <- separate(x_y_e_table, End, c("End.y", "End.x"))
+
+
+
+return(x_y_e_table)
+}
+
+end_list <- list()
+for (i in seq_along(draw)){
+  end_list[[i]] <- x_y_e_f(draw[[i]])
+}
+```
+
+##### Add game details and join teams into one
+```{r dets draw}
+# add game details #
+game_names <- names(pr_pass_list)
+for (i in seq_along(game_names)){
+  end_list[[i]]$Match_ID <- game_names[i]
+  end_list[[i]] <- separate(end_list[[i]], Match_ID, c("Match", "Team", "Opposition", "Start"))
+  end_list[[i]]$MS <- "Drawing"
+}
+
+# join all match per team lists into one data frame #
+end_draw <- bind_rows(end_list)
+```
+
+##### Calculate percentage of ball movements ending in each attack zone from each start attack zone when drawing
+```{r e draw sum}
+# calculate average end attack zone per start attack zone #
+end_draw_sum <- end_draw %>%
+    group_by(Match, Team, Opposition, MS, Start, Attack_Zone) %>%
+    summarise(across(Percent, sum, na.rm = TRUE))
+```
+
+#### 22. EXPORT DATA
+##### Join attack zone per match status progression rate data frames into one and calculate team averages per start location
+```{r app data pr}
+# join attack zone match status into one #
+z_all <- bind_rows(end_win, end_lose, end_draw)
+
+# calculate percent per end location per starting zone per team
+z_all <- z_all%>%
+  group_by(Team, MS, Start, End.y, End.x) %>%
+  summarise(across(Percent, mean, na.rm = TRUE))
+
+# save data frame #
+write_xlsx(z_all, "Data/Processed Data//Game_Progress_Zones_Women.xlsx")
+
+z_all2 <- head(z_all)
+knitr::kable(z_all2, caption = "Teams Average End Zones Data")
+```
+##### Join attack zone per match status progression rate data frames into one and calculate opposition averages per start location
+```{r app data opp pr}
+# join attack zone match status into one #
+z_all_opp <- bind_rows(end_win, end_lose, end_draw)
+
+# calculate percent per end location per starting zone per team
+z_all_opp <- z_all_opp %>%
+  group_by(Opposition, MS, Start, End.y, End.x) %>%
+  summarise(across(Percent, mean, na.rm = TRUE))
+
+# rename opposition to team #
+z_all_opp <- rename(z_all_opp, "Team" = "Opposition")
+
+# switch match status from opposition to team perspective #
+z_all_opp <- ungroup(z_all_opp)
+z_all_opp <- mutate(z_all_opp, ms = ifelse(z_all_opp$MS == "Winning", "Losing", NA))
+z_all_opp <- mutate(z_all_opp, ms = ifelse(z_all_opp$MS == "Losing", "Winning", z_all_opp$ms))
+z_all_opp <- mutate(z_all_opp, ms = ifelse(z_all_opp$MS == "Drawing", "Drawing", z_all_opp$ms))
+
+# select columns for analysis #
+z_all_opp <- select(z_all_opp, Team, ms, Start, End.x, End.y, Percent)
+
+# rename ms #
+z_all_opp <- rename(z_all_opp, "MS" = "ms")
+
+# save data frame #
+write_xlsx(z_all_opp, "Data/Processed Data//Opp_Game_Progress_Zones_Women.xlsx")
+
+z_all_opp2 <- head(z_all_opp)
+knitr::kable(z_all_opp2, caption = "Opposition Average End Zones Data")
+```
+
+#### 23. CALCULATE PROGRESSION RATES
+##### Join all attack zones per match status into one
+```{r bind pr}
+# join match status attack zones into one #
+sum_all <- bind_rows(end_win_sum, end_lose_sum, end_draw_sum)
+
+# split into starting attack zones #
+z1_sum <- filter(sum_all, Start == "BuildAtt")
+z2_sum <- filter(sum_all, Start == "BuildDef")
+z3_sum <- filter(sum_all, Start == "Circle")
+z4_sum <- filter(sum_all, Start == "Corners")
+z5_sum <- filter(sum_all, Start == "DeepAtt")
+z6_sum <- filter(sum_all, Start == "DeepDef")
+z7_sum <- filter(sum_all, Start == "Outlet")
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone one
+```{r z1 pr}
+# Directions  #
+Back <- c( "Build_Def", "Deep_Def", "Outlet")
+Stay <- c("Build_Att")
+Forward <- c("Corners")
+Goal <- c("Deep_Att", "Circle")
+
+# add new column identifying attack zone #
+z1_dir <- z1_sum%>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z1_dir_sum <- z1_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone two
+```{r z2 pr}
+# Directions #
+Back <- c( "Deep_Def", "Outlet")
+Stay <- c("Build_Def")
+Forward <- c("Build_Att", "Corners")
+Goal <- c("Deep_Att", "Circle")
+
+# add new column identifying attack zone #
+z2_dir <- z2_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z2_dir_sum <- z2_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone three
+```{r z3 pr}
+# Directions #
+Back <- c( "Build_Att", "Build_Def", "Corners", "Deep_Def", "Outlet")
+Stay <- c("Circle")
+Forward <- c("Deep_Att")
+Goal <- c( "Circle")
+
+# add new column identifying attack zone #
+z3_dir <- z3_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z3_dir_sum <- z3_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone four
+```{r z4 pr}
+# Directions #
+Back <- c("Build_Att", "Build_Def", "Deep_Def", "Outlet")
+Stay <- c("Corners")
+Forward <- c("Deep_Att")
+Goal <- c("Circle")
+
+# add new column identifying attack zone #
+z4_dir <- z4_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z4_dir_sum <- z4_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone five
+```{r z5 pr}
+# Directions #
+Back <- c("Build_Att", "Build_Def", "Deep_Def", "Outlet")
+Stay <- c("Deep_Att")
+Forward <- c("Corners")
+Goal <- c("Circle")
+
+# add new column identifying attack zone #
+z5_dir <- z5_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z5_dir_sum <- z5_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone six
+```{r z6 pr}
+# Directions #
+Stay <- c("Deep_Def")
+Back <- c("Deep_Def")
+Forward <- c("Outlet")
+Goal <- c("Build_Att", "Build_Def", "Circle", "Corners", "Deep_Att")
+
+# add new column identifying attack zone #
+z6_dir <- z6_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z6_dir_sum <- z6_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+```
+
+##### Calculate percentage of ball movements in each direction from zone seven
+```{r z7 pr}
+# Directions #
+Back <- c( "Deep_Def")
+Stay <- c("Outlet")
+Forward <- c("Build_Def")
+Goal <- c("Build_Att", "Corners", "Deep_Att", "Circle")
+
+# add new column identifying attack zone #
+z7_dir <- z7_sum %>%
+  mutate(
+    Direction = case_when(
+      Attack_Zone %in% Back ~ "Back",
+      Attack_Zone %in% Stay ~ "Stay",
+      Attack_Zone %in% Forward ~ "Forward",
+      Attack_Zone %in% Goal ~ "Goal"
+    )
+  )
+
+# calculate percentage per direction #
+z7_dir_sum <- z7_dir %>%
+  group_by(Start, Match, Team, Opposition, MS, Direction) %>%
+  summarise(across("Percent", (sum)))
+
+
+```
+
+##### Join attack zones for analysis
+```{r bind pr dir}
+# join attack zones sum into one #
+z_dir <- bind_rows(z1_dir_sum, z2_dir_sum, z3_dir_sum, z4_dir_sum, z5_dir_sum, z6_dir_sum, z7_dir_sum)
+
+# transform from long to wide #
+z_dir <- z_dir %>%
+  pivot_wider(names_from = "Direction",
+              values_from = "Percent")
+
+z_dir2 <- head(z_dir)
+knitr::kable(z_dir2, caption = "Progress Rates Data")
+```
+
+### GAME POSSESSION
+#### 24. SPLIT INTO MATCH PER TEAM
+#####  Separate games per team to identify each teams ball movement strategies
+```{r split gp}
+# create data frame per team #
+gp_pass_list <- split(pass, pass$Match_Team)
+
+```
+
+#### 25. FILTER MATCH STATUS
+##### Extract rows per team per match status
+```{r filter gp}
+# select game context to analyse #
+win <- list()
+for (i in seq_along(gp_pass_list)){
+win[[i]] <- filter(gp_pass_list[[i]], Match.Status == "Winning" )
+}
+
+lose <- list()
+for (i in seq_along(gp_pass_list)){
+lose[[i]] <- filter(gp_pass_list[[i]], Match.Status == "Losing" )
+}
+
+draw <- list()
+for (i in seq_along(gp_pass_list)){
+draw[[i]] <- filter(gp_pass_list[[i]], Match.Status == "Drawing" )
+}
+```
+
+#### 26. CALCULATE GAME POSSESSION
+##### Calculate total time for all ball movements per team per match status per match
+```{r time gp}
+# calculate total number of ball movements per match status #
+time_win <- list()
+for (i in seq_along(win)){
+time_win[[i]] <- colSums(win[[i]][, 15])
+}
+
+time_lose <- list()
+for (i in seq_along(lose)){
+time_lose[[i]] <- colSums(lose[[i]][, 15])
+}
+
+time_draw <- list()
+for (i in seq_along(draw)){
+time_draw[[i]] <- colSums(draw[[i]][, 15])
+}
+```
+
+##### Join all teams match status data frames into one and name columns
+```{r unlist gp}
+# win #
+# join teams per match status #
+time_win <- bind_rows(time_win)
+
+#add names as new column #
+time_win$Match_Team <- names(gp_pass_list)
+
+# separate name column #
+time_win <- separate(time_win, Match_Team, c("Match", "Team", "Opposition"), remove = FALSE)
+
+# lose #
+time_lose <- bind_rows(time_lose)
+time_lose$Match_Team <- names(gp_pass_list)
+time_lose <- separate(time_lose, Match_Team, c("Match", "Team", "Opposition"), remove = FALSE)
+
+# draw #
+time_draw <- bind_rows(time_draw)
+time_draw$Match_Team <- names(gp_pass_list)
+time_draw <- separate(time_draw, Match_Team, c("Match", "Team", "Opposition"), remove = FALSE)
+```  
+
+##### Calculate game possession percentage by joining opposite match status periods
+```{r join match gp}
+# join corresponding win and lose match periods #
+time_wl <- inner_join(time_win, time_lose, by = "Match")
+
+# ensure win/loss period was 2 different teams #
+time_wl <- filter(time_wl, Team.x != Team.y )
+
+# calculate total ball movement per match #
+time_wl <- mutate(time_wl, Time_MS = (Time.x + Time.y))
+
+# convert to percentages #
+time_wl <- mutate(time_wl, Win = (Time.x/Time_MS)*100, Lose = (Time.y/Time_MS)*100)
+
+# join corresponding draw match periods #
+time_d <- inner_join(time_draw, time_draw, by = "Match")
+
+# ensure draw period was 2 different teams #
+time_d <- filter(time_d, Team.x != Team.y )
+
+# calculate total ball movements per match #
+time_d <- mutate(time_d, Time_MS = (Time.x + Time.y))
+
+#convert to percentages #
+time_d <- mutate(time_d, Draw = (Time.x/Time_MS)*100)
+```
+
+##### Tidy for analysis
+```{r select gp}
+# select columns for analysis and rename #
+win_sum <- select(time_wl, Match, Team.x, Opposition.x, Win) %>% 
+  rename("Team" = "Team.x", "Opposition" = "Opposition.x")
+
+lose_sum <- select(time_wl, Match, Team.y, Opposition.y, Lose) %>% 
+  rename("Team" = "Team.y", "Opposition" = "Opposition.y")
+
+draw_sum <- select(time_d, Match, Team.x, Opposition.x, Draw) %>% 
+  rename("Team" = "Team.x", "Opposition" = "Opposition.x")
+```
+
+##### Join match status data frames and tidy for analysis
+```{r join ms gp}
+# join win and lose into one #
+all_game_sum <- inner_join(win_sum, lose_sum, by = c("Match", "Team", "Opposition"))
+
+# join draw to win/loss #
+all_game_sum <- inner_join(all_game_sum, draw_sum, by = c("Match", "Team", "Opposition"))
+
+# transform from wide to long #
+all_game_sum <- all_game_sum %>%
+  pivot_longer(cols = Win:Draw,
+               names_to = "MS",
+               values_to = "Game_Poss")
+
+all_game_sum2 <- head(all_game_sum)
+knitr::kable(all_game_sum2, caption = "Game Possession Data")
+```
+
+### BALL MOVEMENT PROFILES
+#### 27. GATHER BALL MOVEMENT VARIABLES
+##### Identify ball movement variable data frames needed for analysis
+```{r import bm}
+# ungroup and rename data frames to be used #
+e <- ungroup(e_ms)
+poss <- ungroup(time_ms)
+end <- ungroup(z_dir)
+time <- ungroup(all_game_sum)
+
+```
+
+##### Normalise entropy data by dividing by maximum entropy
+```{r e tidy}
+
+# add new column with normalised entropy #
+e <- mutate(e, Build_Att = Build_Att/3.69, 
+               Build_Def = Build_Def/3.69, 
+               Circle = Circle/3.69, 
+               Corners = Corners/3.69, 
+               Deep_Att = Deep_Att/3.69, 
+               Deep_Def = Deep_Def/3.69, 
+               Outlet = Outlet/3.69)
+
+```
+
+##### Add NA to rows without possession values
+```{r p tidy}
+# add column with total possession
+poss <- mutate(poss, Total = (Build_Att + Build_Def + Circle + Corners + Deep_Att + Deep_Def + Outlet))
+
+# add NA to each attack zone where total = 1 #
+poss <- mutate(poss, Build_Att = ifelse(poss$Total == 0, NA, poss$Build_Att))
+poss <- mutate(poss, Build_Def = ifelse(poss$Total == 0, NA, poss$Build_Def))
+poss <- mutate(poss, Circle = ifelse(poss$Total == 0, NA, poss$Circle))
+poss <- mutate(poss, Corners = ifelse(poss$Total == 0, NA, poss$Corners))
+poss <- mutate(poss, Deep_Att = ifelse(poss$Total == 0, NA, poss$Deep_Att))
+poss <- mutate(poss, Deep_Def = ifelse(poss$Total == 0, NA, poss$Deep_Def))
+poss <- mutate(poss, Outlet = ifelse(poss$Total == 0, NA, poss$Outlet))
+```
+
+##### Add NA to rows without possession values
+```{r pr tidy}
+# add column with total possession
+end$Total <- rowSums(end[, c("Back", "Stay", "Forward", "Goal")], na.rm = TRUE)
+
+
+# add NA to each attack zone where total = 1 #
+end <- mutate(end, Back = ifelse(end$Total == 0, NA, end$Back))
+end <- mutate(end, Stay = ifelse(end$Total == 0, NA, end$Stay))
+end <- mutate(end, Forward = ifelse(end$Total == 0, NA, end$Forward))
+end <- mutate(end, Goal = ifelse(end$Total == 0, NA, end$Goal))
+
+```
+
+##### Rename match status values in game possession data frame
+```{r time tidy}
+# add -ing to MS #
+time <- time %>%
+  mutate(MS =  case_when( 
+            MS == "Win" ~ "Winning",
+            MS == "Lose" ~ "Losing",
+            MS == "Draw" ~ "Drawing"))
+```
+
+##### Join ball movement variable data frame per attack zone into one
+```{r bind bm}
+# Z1 #
+# join entropy and possession by match context per attack zone, column = attack zone #
+# and match details #
+z1 <- inner_join(e[,1:5], poss[,1:5], by = c("Match", "Team", "Opposition", "MS"))
+
+# join entropy/poss and progression rates by match context per attack zone, rows = all #
+# matches per attack zone #
+z1 <- inner_join(z1, end[1:444, ], by = c("Match", "Team", "Opposition", "MS"))
+
+# rename columns to identify variables #
+z1 <- rename(z1, "Entropy" = "Build_Att.x", "Poss" = "Build_Att.y")
+
+# join entropy/poss/prog and game possession by match context per attack zone #
+z1 <- inner_join(z1, time, by = c("Match", "Team", "Opposition", "MS"))
+
+# transform to zscores #
+z1_z <- z1 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z2 #
+z2 <- inner_join(e[,c(1:4, 6)], poss[,c(1:4, 6)], by = c("Match", "Team", "Opposition", "MS"))
+z2 <- inner_join(z2, end[445:888, ], by = c("Match", "Team", "Opposition", "MS"))
+z2 <- rename(z2, "Entropy" = "Build_Def.x", "Poss" = "Build_Def.y")
+z2 <- inner_join(z2, time, by = c("Match", "Team", "Opposition", "MS"))
+z2_z <- z2 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z3 #
+z3 <- inner_join(e[,c(1:4, 7)], poss[,c(1:4, 7)], by = c("Match", "Team", "Opposition", "MS"))
+z3 <- inner_join(z3, end[889:1332, ], by = c("Match", "Team", "Opposition", "MS"))
+z3 <- rename(z3, "Entropy" = "Circle.x", "Poss" = "Circle.y")
+z3 <- inner_join(z3, time, by = c("Match", "Team","Opposition", "MS"))
+z3_z <- z3 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z4 #
+z4 <- inner_join(e[,c(1:4, 8)], poss[,c(1:4, 8)], by = c("Match", "Team", "Opposition", "MS"))
+z4 <- inner_join(z4, end[1333:1776, ], by= c("Match", "Team", "Opposition", "MS"))
+z4 <- rename(z4, "Entropy" = "Corners.x", "Poss" = "Corners.y")
+z4 <- inner_join(z4, time, by = c("Match", "Team", "Opposition", "MS"))
+z4_z <- z4 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z5 #
+z5 <- inner_join(e[,c(1:4, 9)], poss[,c(1:4, 9)], by = c("Match", "Team", "Opposition", "MS"))
+z5 <- inner_join(z5, end[1777:2220, ], by = c("Match", "Team", "Opposition", "MS"))
+z5 <- rename(z5, "Entropy" = "Deep_Att.x", "Poss" = "Deep_Att.y")
+z5 <- inner_join(z5, time, by = c("Match", "Team", "Opposition", "MS"))
+z5_z <- z5 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z6 #
+z6 <- inner_join(e[,c(1:4, 10)], poss[,c(1:4, 10)], by = c("Match", "Team", "Opposition", "MS"))
+z6 <- inner_join(z6, end[2221:2664, ], by= c("Match", "Team", "Opposition", "MS"))
+z6 <- rename(z6, "Entropy" = "Deep_Def.x", "Poss" = "Deep_Def.y")
+z6 <- inner_join(z6, time, by = c("Match", "Team", "Opposition", "MS"))
+z6_z <- z6 %>%
+  mutate(across(where(is.numeric),scale))
+
+# Z7 #
+z7 <- inner_join(e[,c(1:4, 11)], poss[,c(1:4, 11)], by = c("Match", "Team", "Opposition", "MS"))
+z7 <- inner_join(z7, end[2665:3108, ], by = c("Match", "Team", "Opposition", "MS"))
+z7 <- rename(z7, "Entropy" = "Outlet.x", "Poss" = "Outlet.y")
+z7 <- inner_join(z7, time, by = c("Match", "Team", "Opposition", "MS"))
+z7_z <- z7 %>%
+  mutate(across(where(is.numeric),scale))
+
+# join attack zones into one #
+zones <- bind_rows(z1, z2, z3, z4, z5, z6, z7)
+
+# join standardised attack zones into one #
+zones_z <- bind_rows(z1_z, z2_z, z3_z, z4_z, z5_z, z6_z, z7_z)
+```
+
+#### 28. CREATE TEAM BALL MOVEMENT PROFILES
+##### Calculate average per team per match status for each ball movement variable
+```{r teams bm}
+# calculate average per team #
+teams_sum <- zones %>%
+  group_by(Team, MS, Start) %>%
+  summarise(across(c("Game_Poss", "Entropy", "Poss", "Back", "Stay", "Forward", "Goal"), mean, na.rm = TRUE))
+
+# split per team #
+teams_sum_list <- split(teams_sum, teams_sum$Team)
+
+# calculate average per team zscores #
+teams_sum_z <- zones_z %>%
+  group_by(Team, MS, Start) %>%
+  summarise(across(c("Game_Poss", "Entropy", "Poss", "Back", "Stay", "Forward", "Goal"), mean, na.rm = TRUE))
+
+# split per team #
+teams_sum_z_list <- split(teams_sum_z, teams_sum_z$Team)
+```
+
+#### 29. EXPORT DATA
+##### Tidy and join standardised and unstandardised team data frames into one for presentation
+```{r profile bm}
+bm_f <- function(x){
+bm <- x %>%
+  # transform from wide to long #
+  pivot_longer(cols = c(Entropy, Poss, Back, Forward, Goal, Stay, Game_Poss),
+               names_to = "Variable",
+               values_to = "value")
+
+# round values to 2 digits #
+bm$value<-round(bm$value, digits = 2)
+
+# convert to a data frame #
+bm <- as.data.frame(bm)
+}
+
+bm_list <- list()
+for (i in seq_along(teams_sum_list)){
+  bm_list[[i]] <- bm_f(teams_sum_list[[i]])
+}
+
+bmz_f <- function(x){
+bmz <- x %>%
+  # transform from wide to long #
+  pivot_longer(cols = c( Entropy, Poss, Back, Forward, Goal, Stay, Game_Poss),
+               names_to = "Variable",
+               values_to = "zscore")
+
+# convert to a data frame #
+bmz <- as.data.frame(bmz)
+
+}
+
+bmz_list <- list()
+for (i in seq_along(teams_sum_z_list)){
+  bmz_list[[i]] <- bmz_f(teams_sum_z_list[[i]])
+}
+
+# join zscores to real values #
+bm <- list()
+for (i in seq_along(bm_list)){
+bm[[i]] <- bind_cols(bm_list[[i]], zscore = bmz_list[[i]][, 5])
+}
+
+# join all teams into one #
+bm_prof <- bind_rows(bm)
+
+# convert start attack zone to factor #
+bm_prof$Start <- as.factor(bm_prof$Start) 
+
+# save data frame #
+write_xlsx(bm_prof, "Data/Processed Data//Ball_Move_MS_Women.xlsx")
+
+bm_prof2 <- head(bm_prof)
+knitr::kable(bm_prof2, caption = "Teams Ball Movement Profiles Data")
+```
+
+#### 30. CREATE OPPOSITION BALL MOVEMENT PROFILES
+##### Calculate average per opposition per match status for each ball movement variable
+```{r opps bm}
+# calculate average per opposition #
+opps_sum <- zones %>%
+  group_by(Opposition, MS, Start) %>%
+  summarise(across(c("Game_Poss", "Entropy", "Poss", "Back", "Stay", "Forward", "Goal"), mean, na.rm = TRUE))
+
+# split per opposition #
+opps_sum_list <- split(opps_sum, opps_sum$Opposition)
+
+# calculate average per opposition zscores #
+opps_sum_z <- zones_z %>%
+  group_by(Opposition, MS, Start) %>%
+  summarise(across(c("Game_Poss", "Entropy", "Poss", "Back", "Stay", "Forward", "Goal"), mean, na.rm = TRUE))
+
+# split per opposition #
+opps_sum_z_list <- split(opps_sum_z, opps_sum_z$Opposition)
+```
+
+#### 31. EXPORT DATA
+##### Tidy and join standardised and unstandardised opposition data frames into one for presentation
+```{r profile obm}
+obm_f <- function(x){
+obm <- x %>%
+  # transform from wide to long #
+  pivot_longer(cols = c(Entropy, Poss, Back, Forward, Goal, Stay, Game_Poss),
+               names_to = "Variable",
+               values_to = "value")
+
+# round values to 2 digits #
+obm$value<-round(obm$value, digits = 2)
+
+# convert to a data frame #
+obm <- as.data.frame(obm)
+}
+
+obm_list <- list()
+for (i in seq_along(opps_sum_list)){
+  obm_list[[i]] <- obm_f(opps_sum_list[[i]])
+}
+
+obmz_f <- function(x){
+obmz <- x %>%
+  # transform from wide to long #
+  pivot_longer(cols = c( Entropy, Poss, Back, Forward, Goal, Stay, Game_Poss),
+               names_to = "Variable",
+               values_to = "zscore")
+
+# convert to a data frame #
+obmz <- as.data.frame(obmz)
+
+}
+
+obmz_list <- list()
+for (i in seq_along(opps_sum_z_list)){
+  obmz_list[[i]] <- obmz_f(opps_sum_z_list[[i]])
+}
+
+# join zscores to real values #
+obm <- list()
+for (i in seq_along(obm_list)){
+obm[[i]] <- bind_cols(obm_list[[i]], zscore = obmz_list[[i]][, 5])
+}
+
+# join all teams into one #
+obm_prof <- bind_rows(obm)
+
+# convert start attack zone to factor #
+obm_prof$Start <- as.factor(obm_prof$Start) 
+
+# change opposition to team #
+obm_prof <- rename(obm_prof, "Team" = "Opposition")
+
+# switch match status from opposition to team perspective #
+obm_prof <- mutate(obm_prof, ms = ifelse(obm_prof$MS == "Winning", "Losing", NA))
+obm_prof <- mutate(obm_prof, ms = ifelse(obm_prof$MS == "Losing", "Winning", obm_prof$ms))
+obm_prof <- mutate(obm_prof, ms = ifelse(obm_prof$MS == "Drawing", "Drawing", obm_prof$ms))
+
+# select columns for analysis #
+obm_prof <- select(obm_prof, Team, ms, Start, Variable, value, zscore)
+
+# rename ms #
+obm_prof <- rename(obm_prof, "MS" = "ms")
+
+# save data frame #
+write_xlsx(obm_prof, "Data/Processed Data//Opp_Ball_Move_MS_Women.xlsx")
+
+obm_prof2 <- head(obm_prof)
+knitr::kable(obm_prof2, caption = "Oppositions Ball Movement Profiles Data")
+```

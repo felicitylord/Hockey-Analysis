@@ -1,0 +1,5883 @@
+---
+title: "Game Styles Data Analysis"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    toc_depth: 4
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE)
+```
+
+```{css,  eval=TRUE, echo=FALSE}
+
+.tocify-header {
+  text-indent: initial;
+}
+
+.tocify-subheader > .tocify-item {
+  text-indent: initial;
+  padding-left: 20px;
+}
+
+
+```
+
+### IMPORT DATA
+```{r load packages}
+# load packages #
+library(plyr)
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(writexl)
+library(tibble)
+library(knitr)
+```
+
+ 
+#### 1. IMPORT AND TIDY RAW DATA
+##### Import raw data files
+```{r bind data}
+# list all files with ext xlsx #
+files <- list.files(path = "Data/Raw Data Women/Attack", pattern = "*.xlsx", full.names = T)
+
+# import files from list (columns as characters) and bind to form one large database of games #
+game <- sapply(files, read_excel, simplify = FALSE, col_types = "text") %>%
+  bind_rows(.id = "id")
+
+game2 <- head(game)
+knitr::kable(game2[, 1:4], caption = "Raw Data")
+```
+
+##### Separate name file column and add game detail columns
+```{r tidy}
+# separate file name column into match number, home and away team, numbers = number of words in file path (eg. Data, Raw, Data, Women, Attack) #
+game <- separate(game, id, c("1", "2", "3", "4", "5", "Match", "Home_T", "vs", "Away_T"))
+
+# separate row names from sportscode into team, gender and extras #
+game <- separate(game, category, c("Team", "Gender", "A", "B", "C"))
+
+# add new column with Opposition and match_number_team #
+game <- mutate(game, Opposition = ifelse(game$Team == game$Home_T, game$Away_T, game$Home_T)) 
+
+# add new column with match_number_team #
+game <- unite(game, Match_Team, c(Match, Team))
+
+game2 <- head(game)
+knitr::kable(game2[, 6:15], caption = "Tidied Data")
+```
+
+#### 2. ADD MATCH CONTEXT
+##### Split by match per team, extract game actions rows and create table to identify game actions used per match status
+```{r context}
+# create data frame per team per match #
+game_list <- split(game, game$Match_Team)
+
+game_actions_f <- function(x){
+# extract from all data (Game) rows referring to Game Actions and save as separate data frame (Game_Actions) #
+game_actions <- filter(x, A == "Game")
+
+# rename columns #
+game_actions <- plyr::rename(game_actions, c("descriptors..." = "Game.Action", 
+                                             "...7" = "Effect", 
+                                             "...8" = "Match.Status",
+                                             "...9" = "Match.Location",
+                                             "...10" = "Quality.Opp", 
+                                             "...11" = "Location", 
+                                             "...12" = "Attack.Type"))
+
+# remove unnecessary columns #
+game_actions <- select(game_actions, Match_Team, Opposition, Gender, Game.Action, Effect, Match.Status, Match.Location, Quality.Opp, Location, Attack.Type)
+
+return(game_actions)
+}
+
+game_actions_t_list <- list()
+for (i in seq_along(game_list)){
+  game_actions_t_list[[i]] <- game_actions_f(game_list[[i]])
+}
+
+# identify percentage of games winning, losing, drawing #
+context_f <- function(x){
+
+# create table with Teams as rows and Match Status types as columns #
+context <- table(x$Match_Team, x$Match.Status)
+
+# transform to percentages (% match status per game actions) #
+context <- round((prop.table(context)), digits = 2)
+
+# convert to data frame #
+context <- as.data.frame.matrix(context)
+
+# list of match status #
+cc <- c("Winning", "Losing", "Drawing")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+context[cc[!(cc %in% colnames(context))]] = 0
+
+return(context)
+ } 
+
+context_list <- list()
+for (i in seq_along(game_actions_t_list)){
+  context_list[[i]] <- context_f(game_actions_t_list[[i]])
+}
+```
+
+##### Join context to raw data
+```{r bind context}
+
+# join match status to game data #
+game_context_list <- list()
+for (i in seq_along(game_list)){
+  game_context_list[[i]] <- bind_cols(game_list[[i]], context_list[[i]])
+}
+
+# join all data together #
+game_context <- bind_rows(game_context_list)
+```
+
+##### Extract matches with >25% of game actions perfomed when winning, losing and drawing
+```{r context selection}
+# Winning #
+# select game context to analyse #
+gc_win <- filter_all(game_context, any_vars(str_detect(., "Winning")))
+
+#  use criteria of >25% of game actions #
+gc_win <- filter(gc_win, Winning >= 0.25)
+
+# Losing #
+# select game context to analyse #
+gc_lose <- filter_all(game_context, any_vars(str_detect(., "Losing")))
+
+#  use criteria of >25% of game actions #
+gc_lose <- filter(gc_lose, Losing >= 0.25)
+
+# Drawing #
+# select game context to analyse #
+gc_draw <- filter_all(game_context, any_vars(str_detect(., "Drawing")))
+
+#  use criteria of >25% of game actions #
+gc_draw <- filter(gc_draw, Drawing >= 0.25)
+
+```
+
+#### 3. SPLIT INTO TEAMS
+#####  Separate games per team to identify each teams game style
+```{r split}
+# create data frame per team per match #
+gc_win_list <- split(gc_win, gc_win$Match_Team)
+
+gc_lose_list <- split(gc_lose, gc_lose$Match_Team)
+
+gc_draw_list <- split(gc_draw, gc_draw$Match_Team)
+```
+
+### GAME ACTIONS
+#### 4. FILTER GAME ACTIONS
+##### Extract game action rows, select and rename descriptive columns
+```{r game actions function}
+game_actions_f <- function(x){
+# extract from all data (Game) rows referring to Game Actions and save as separate data frame (Game_Actions) #
+game_actions <- filter(x, A == "Game")
+
+# rename columns #
+game_actions <- plyr::rename(game_actions, c("descriptors..." = "Game.Action", 
+                                             "...19" = "Effect", 
+                                             "...20" = "Match.Status",
+                                             "...21" = "Match.Location", 
+                                             "...22" = "Quality.Opp", 
+                                             "...23" = "Location", 
+                                             "...24" = "Attack.Type"))
+
+# remove unnecessary columns #
+game_actions <- select(game_actions, Match_Team, Opposition, Gender, Game.Action, Effect, Match.Status, Match.Location, Quality.Opp, Location, Attack.Type, Winning, Losing, Drawing)
+
+return(game_actions)
+}
+
+# Winning #
+win_game_actions_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_game_actions_list[[i]] <- game_actions_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_game_actions_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_game_actions_list[[i]] <- game_actions_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_game_actions_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_game_actions_list[[i]] <- game_actions_f(gc_draw_list[[i]])
+}
+```
+
+##### Extract game details to identify match context
+```{r game details}
+# extract game details #
+game_details_f <- function(x){
+  game_details <- as.data.frame(x[1, c("Match_Team", "Opposition", "Match.Status", "Match.Location", "Quality.Opp", "Winning", "Losing", "Drawing")]) %>% 
+    separate(Match_Team, c("Match", "Team"), remove = FALSE)
+}
+
+# Winning #
+win_game_details_list <- list()
+for (i in seq_along(win_game_actions_list)){
+  win_game_details_list[[i]] <- game_details_f(win_game_actions_list[[i]])
+}
+
+# Losing #
+lose_game_details_list <- list()
+for (i in seq_along(lose_game_actions_list)){
+  lose_game_details_list[[i]] <- game_details_f(lose_game_actions_list[[i]])
+}
+
+# Drawing #
+draw_game_details_list <- list()
+for (i in seq_along(draw_game_actions_list)){
+  draw_game_details_list[[i]] <- game_details_f(draw_game_actions_list[[i]])
+}
+```
+
+##### Extract game actions performed during established attacks
+```{r game actions e}
+# filter for attack type #
+
+# Winning #
+win_game_actions_e_list <- list()
+for (i in seq_along(win_game_actions_list)){
+  win_game_actions_e_list[[i]] <- filter(win_game_actions_list[[i]], Attack.Type == "Established")
+}
+
+# Losing #
+lose_game_actions_e_list <- list()
+for (i in seq_along(lose_game_actions_list)){
+  lose_game_actions_e_list[[i]] <- filter(lose_game_actions_list[[i]], Attack.Type == "Established")
+}
+
+# Drawing #
+draw_game_actions_e_list <- list()
+for (i in seq_along(draw_game_actions_list)){
+  draw_game_actions_e_list[[i]] <- filter(draw_game_actions_list[[i]], Attack.Type == "Established")
+}
+
+```
+
+##### Extract game actions performed during counter attacks
+```{r game actions c}
+# filter for attack type #
+
+# Winning #
+win_game_actions_c_list <- list()
+for (i in seq_along(win_game_actions_list)){
+  win_game_actions_c_list[[i]] <- filter(win_game_actions_list[[i]], Attack.Type == "Counter")
+}
+
+# Losing #
+lose_game_actions_c_list <- list()
+for (i in seq_along(lose_game_actions_list)){
+  lose_game_actions_c_list[[i]] <- filter(lose_game_actions_list[[i]], Attack.Type == "Counter")
+}
+
+# Drawing #
+draw_game_actions_c_list <- list()
+for (i in seq_along(draw_game_actions_list)){
+  draw_game_actions_c_list[[i]] <- filter(draw_game_actions_list[[i]], Attack.Type == "Counter")
+}
+```
+
+#### 5. GAME ACTION PER ATTACK TYPE PER LOCATION
+##### Create table to identify game actions in AC in established attacks and convert to percentages for comparison
+```{r GA_ACE function}
+# AC Game Actions Established #
+ga_ace_f <- function(x){
+  if (any(grepl("AC Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to AC and save as separate data frame #
+ga_ace <- filter(x, Location == "AC Att") 
+
+# create table with Teams as rows and Game Action types as columns # 
+ga_ace <- table(ga_ace$Match_Team, ga_ace$Game.Action)
+
+# transform to percentages (% game action types used in AC) #
+ga_ace <- round((prop.table(ga_ace) * 100), digits = 2)
+
+# convert to data frame #
+ga_ace <- as.data.frame.matrix(ga_ace)
+
+# list of game actions #
+a <- c("Dribble", "Pass", "Cross")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_ace[a[!(a %in% colnames(ga_ace))]] = 0
+
+# rename all columns with prefix ACE #
+colnames(ga_ace) <- paste("ACE", colnames(ga_ace), sep = "_")
+
+return(ga_ace)
+ } else {(ga_ace <- setNames(as.data.frame(matrix(c(33, 33,33), ncol = 3, nrow = 1)), c("ACE_Dribble", "ACE_Pass", "ACE_Cross")))
+  return(ga_ace)}
+}
+
+# Winning #
+win_ga_ace_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_ga_ace_list[[i]] <- ga_ace_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_ga_ace_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_ga_ace_list[[i]] <- ga_ace_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_ace_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_ga_ace_list[[i]] <- ga_ace_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify game actions in AC in counter attacks and convert to percentages for comparison
+```{r GA_ACC function}
+# AC Game Actions Counter #
+ga_acc_f <- function(x){
+  if (any(grepl("AC Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to AC and save as separate data frame #
+ga_acc <- filter(x, Location == "AC Att") 
+
+# create table with Teams as rows and Game Action types as columns #
+ga_acc <- table(ga_acc$Match_Team, ga_acc$Game.Action)
+
+# transform to percentages (% game action types used in AC) #
+ga_acc <- round((prop.table(ga_acc) * 100), digits = 2)
+
+# convert to data frame #
+ga_acc <- as.data.frame.matrix(ga_acc)
+
+# list of game actions #
+a <- c("Dribble", "Pass", "Cross")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_acc[a[!(a %in% colnames(ga_acc))]] = 0
+
+# rename all columns with prefix ACC #
+colnames(ga_acc) <- paste("ACC", colnames(ga_acc), sep = "_")
+
+return(ga_acc)
+ } else {(ga_acc <- setNames(as.data.frame(matrix(c(33, 33, 33), ncol = 3, nrow = 1)), c("ACC_Dribble", "ACC_Pass", "ACC_Cross")))
+  return(ga_acc)}
+}
+
+# Winning #
+win_ga_acc_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_ga_acc_list[[i]] <- ga_acc_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_ga_acc_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_ga_acc_list[[i]] <- ga_acc_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_acc_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_ga_acc_list[[i]] <- ga_acc_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify game actions in A25 in established attacks and convert to percentages for comparison
+```{r GA_A25E function}
+# A25 Game Actions Established #
+ga_a25e_f <- function(x){
+   if (any(grepl("A25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A25 and save as separate #
+# data frame #
+ga_a25e <- filter(x, Location == "A25 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_a25e <- table(ga_a25e$Match_Team, ga_a25e$Game.Action)
+
+# transform to percentages (% game action types used in A25) #
+ga_a25e <- round((prop.table(ga_a25e) * 100), digits = 2)
+
+# convert to data frame #
+ga_a25e <- as.data.frame.matrix(ga_a25e)
+
+# list of game actions #
+b <- c("Dribble", "Pass", "Cross", "Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_a25e[b[!(b %in% colnames(ga_a25e))]] = 0
+
+# rename all columns with prefix A25E #
+colnames(ga_a25e) <- paste("A25E", colnames(ga_a25e), sep = "_")
+
+return(ga_a25e)
+   }  else {(ga_a25e <- setNames(as.data.frame(matrix(c(45, 45, 10, 0, 0), ncol = 5, nrow = 1)), c("A25E_Dribble", "A25E_Pass", "A25E_Cross", "A25E_Overhead", "A25E_Through Ball")))
+  return(ga_a25e)}
+}
+
+# Winning #
+win_ga_a25e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_ga_a25e_list[[i]] <- ga_a25e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_ga_a25e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_ga_a25e_list[[i]] <- ga_a25e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_a25e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_ga_a25e_list[[i]] <- ga_a25e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify game actions in A25 in counter attacks and convert to percentages for comparison
+```{r GA_A25C function}
+# A25 Game Actions Counter #
+ga_a25c_f <- function(x){
+   if (any(grepl("A25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A25 and save as separate data frame #
+ga_a25c <- filter(x, Location == "A25 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_a25c <- table(ga_a25c$Match_Team, ga_a25c$Game.Action)
+
+# transform to percentages (% game action types used in A25) #
+ga_a25c <- round((prop.table(ga_a25c) * 100), digits = 2)
+
+# convert to data frame #
+ga_a25c <- as.data.frame.matrix(ga_a25c)
+
+# list of game actions #
+b <- c("Dribble", "Pass", "Cross", "Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_a25c[b[!(b %in% colnames(ga_a25c))]] = 0
+
+# rename all columns with prefix A25C #
+colnames(ga_a25c) <- paste("A25C", colnames(ga_a25c), sep = "_")
+
+return(ga_a25c)
+   }  else {(ga_a25c <- setNames(as.data.frame(matrix(c(60, 40, 0, 0, 0), ncol = 5, nrow = 1)), c("A25C_Dribble", "A25C_Pass", "A25C_Cross", "A25C_Overhead", "A25C_Through Ball")))
+  return(ga_a25c)}
+}
+
+# Winning #
+win_ga_a25c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_ga_a25c_list[[i]] <- ga_a25c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_ga_a25c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_ga_a25c_list[[i]] <- ga_a25c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_a25c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_ga_a25c_list[[i]] <- ga_a25c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify game actions in A50 in established attacks and convert to percentages for comparison
+```{r GA_A50E function}
+# A50 Game Actions Established #
+ga_a50e_f <- function(x){
+  if (any(grepl("A50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A50 and save as separate data frame #
+ga_a50e <- filter(x, Location == "A50 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_a50e <- table(ga_a50e$Match_Team, ga_a50e$Game.Action)
+
+# transform to percentages (% game action types used in A50) #
+ga_a50e <- round((prop.table(ga_a50e) * 100), digits = 2)
+
+# convert to data frame #
+ga_a50e <- as.data.frame.matrix(ga_a50e)
+
+# list of game actions #
+b <- c("Dribble", "Pass", "Cross", "Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_a50e[b[!(b %in% colnames(ga_a50e))]] = 0
+
+# rename all columns with prefix A50E #
+colnames(ga_a50e) <- paste("A50E", colnames(ga_a50e), sep = "_")
+
+return(ga_a50e)
+  } else {(ga_a50e <- setNames(as.data.frame(matrix(c(40, 60, 0, 0, 0), ncol = 5, nrow = 1)), c("A50E_Dribble", "A50E_Pass", "A50E_Cross", "A50E_Overhead", "A50E_Through Ball")))
+  return(ga_a50e)}
+}
+
+# Winning #
+win_ga_a50e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_ga_a50e_list[[i]] <- ga_a50e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_ga_a50e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_ga_a50e_list[[i]] <- ga_a50e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_a50e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_ga_a50e_list[[i]] <- ga_a50e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify game actions in A50 in counter attacks and convert to percentages for comparison
+```{r GA_A50C function}
+# A50 Game Actions Counter #
+ga_a50c_f <- function(x){
+  if (any(grepl("A50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A50 and save as separate data frame #
+ga_a50c <- filter(x, Location == "A50 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_a50c <- table(ga_a50c$Match_Team, ga_a50c$Game.Action)
+
+# transform to percentages (% game action types used in A50) #
+ga_a50c <- round((prop.table(ga_a50c) * 100), digits = 2)
+
+# convert to data frame #
+ga_a50c <- as.data.frame.matrix(ga_a50c)
+
+# list of game actions #
+b <- c("Dribble", "Pass", "Cross", "Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_a50c[b[!(b %in% colnames(ga_a50c))]] = 0
+
+# rename all columns with prefix A50C #
+colnames(ga_a50c) <- paste("A50C", colnames(ga_a50c), sep = "_")
+
+return(ga_a50c)
+  } else {(ga_a50c <- setNames(as.data.frame(matrix(c(40, 60, 0, 0, 0), ncol = 5, nrow =1)), c("A50C_Dribble", "A50C_Pass", "A50C_Cross", "A50C_Overhead", "A50C_Through Ball")))
+  return(ga_a50c)}
+}
+
+# Winning #
+win_ga_a50c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_ga_a50c_list[[i]] <- ga_a50c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_ga_a50c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_ga_a50c_list[[i]] <- ga_a50c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_a50c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_ga_a50c_list[[i]] <- ga_a50c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify game actions in D50 in established attacks and convert to percentages for comparison
+```{r GA_D50E function}
+# D50 Game Actions Established #
+ga_d50e_f <- function(x){
+    if (any(grepl("D50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D50 and save as separate data frame #
+ga_d50e <- filter(x, Location == "D50 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_d50e <- table(ga_d50e$Match_Team, ga_d50e$Game.Action)
+
+# transform to percentages (% game action types used in D50) #
+ga_d50e <- round((prop.table(ga_d50e) * 100), digits = 2)
+
+# convert to data frame #
+ga_d50e <- as.data.frame.matrix(ga_d50e)
+
+# list of game actions #
+c <- c("Dribble", "Pass","Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_d50e[c[!(c %in% colnames(ga_d50e))]] = 0
+
+# rename all columns with prefix D50E #
+colnames(ga_d50e) <- paste("D50E", colnames(ga_d50e), sep = "_")
+
+return(ga_d50e)
+    } else {(ga_d50e <- setNames(as.data.frame(matrix(c(20, 80, 0, 0), ncol = 4, nrow = 1)), c("D50E_Dribble", "D50E_Pass", "D50E_Overhead", "D50E_Through Ball")))
+  return(ga_d50e)}
+}
+
+# Winning #
+win_ga_d50e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_ga_d50e_list[[i]] <- ga_d50e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_ga_d50e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_ga_d50e_list[[i]] <- ga_d50e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_d50e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_ga_d50e_list[[i]] <- ga_d50e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify game actions in D50 in counter attacks and convert to percentages for comparison
+```{r GA_D50C function}
+# D50 Game Actions Counter #
+ga_d50c_f <- function(x){
+    if (any(grepl("D50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D50 and save as separate data frame #
+ga_d50c <- filter(x, Location == "D50 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_d50c <- table(ga_d50c$Match_Team, ga_d50c$Game.Action)
+
+# transform to percentages (% game action types used in D50) #
+ga_d50c <- round((prop.table(ga_d50c) * 100), digits = 2)
+
+# convert to data frame #
+ga_d50c <- as.data.frame.matrix(ga_d50c)
+
+# list of game actions #
+c <- c("Dribble", "Pass","Overhead", "Through Ball")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_d50c[c[!(c %in% colnames(ga_d50c))]] = 0
+
+# rename all columns with prefix D50C #
+colnames(ga_d50c) <- paste("D50C", colnames(ga_d50c), sep = "_")
+
+return(ga_d50c)
+    } else {(ga_d50c <- setNames(as.data.frame(matrix(c(50, 50, 0, 0), ncol = 4, nrow = 1)), c("D50C_Dribble", "D50C_Pass", "D50C_Overhead", "D50C_Through Ball")))
+  return(ga_d50c)}
+}
+
+# Winning #
+win_ga_d50c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_ga_d50c_list[[i]] <- ga_d50c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_ga_d50c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_ga_d50c_list[[i]] <- ga_d50c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_d50c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_ga_d50c_list[[i]] <- ga_d50c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify game actions in D25 in established attacks and convert to percentages for comparison
+```{r GA_D25E function}
+# D25 Game Actions Established #
+ga_d25e_f <- function(x){
+  if (any(grepl("D25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D25 and save as separate data frame #
+ga_d25e <- filter(x, Location == "D25 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_d25e <- table(ga_d25e$Match_Team, ga_d25e$Game.Action)
+
+# transform to percentages (% game action types used in D25) #
+ga_d25e <- round((prop.table(ga_d25e) * 100), digits = 2)
+
+# convert to data frame #
+ga_d25e <- as.data.frame.matrix(ga_d25e)
+
+# list of game actions #
+d <- c("Dribble", "Pass","Overhead", "Through Ball", "Clearance")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_d25e[d[!(d %in% colnames(ga_d25e))]] = 0
+
+# rename all columns with prefix D25E #
+colnames(ga_d25e) <- paste("D25E", colnames(ga_d25e), sep = "_")
+
+return(ga_d25e)
+  } else {(ga_d25e <- setNames(as.data.frame(matrix(c(25, 70, 5, 0, 0), ncol = 5, nrow = 1)), c("D25E_Dribble", "D25E_Pass", "D25E_Overhead", "D25E_Through Ball", "D25E_Clearance")))
+  return(ga_d25e)}
+}
+
+# Winning #
+win_ga_d25e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_ga_d25e_list[[i]] <- ga_d25e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_ga_d25e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_ga_d25e_list[[i]] <- ga_d25e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_d25e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_ga_d25e_list[[i]] <- ga_d25e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify game actions in D25 in counter attacks and convert to percentages for comparison
+```{r GA_D25C function}
+# D25 Game Actions Counter #
+ga_d25c_f <- function(x){
+  if (any(grepl("D25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D25 and save as separate data frame #
+ga_d25c <- filter(x, Location == "D25 Att")
+
+# create table with Teams as rows and Game Action types as columns #
+ga_d25c <- table(ga_d25c$Match_Team, ga_d25c$Game.Action)
+
+# transform to percentages (% game action types used in D25) #
+ga_d25c <- round((prop.table(ga_d25c) * 100), digits = 2)
+
+# convert to data frame #
+ga_d25c <- as.data.frame.matrix(ga_d25c)
+
+# list of game actions #
+d <- c("Dribble", "Pass","Overhead", "Through Ball", "Clearance")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_d25c[d[!(d %in% colnames(ga_d25c))]] = 0
+
+# rename all columns with prefix D25C # 
+colnames(ga_d25c) <- paste("D25C", colnames(ga_d25c), sep = "_")
+
+return(ga_d25c)
+  } else {(ga_d25c <- setNames(as.data.frame(matrix(c(40, 57, 0, 0, 3), ncol = 5, nrow = 1)), c("D25C_Dribble", "D25C_Pass", "D25C_Overhead","D25C_Through Ball", "D25C_Clearance")))
+  return(ga_d25c)}
+}
+
+# Winning #
+win_ga_d25c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_ga_d25c_list[[i]] <- ga_d25c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_ga_d25c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_ga_d25c_list[[i]] <- ga_d25c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_d25c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_ga_d25c_list[[i]] <- ga_d25c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Join all teams game actions per location data frames into one
+```{r GA Type function}
+# Game Action Total per location per attack type per team #
+
+# Winning #
+win_ga_type_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_ga_type_list[[i]] <- bind_cols(win_ga_ace_list[[i]], win_ga_a25e_list[[i]], win_ga_a50e_list[[i]], win_ga_d50e_list[[i]], win_ga_d25e_list[[i]], win_ga_acc_list[[i]],win_ga_a25c_list[[i]], win_ga_a50c_list[[i]], win_ga_d50c_list[[i]], win_ga_d25c_list[[i]])
+}
+
+# Losing #
+lose_ga_type_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_ga_type_list[[i]] <- bind_cols(lose_ga_ace_list[[i]], lose_ga_a25e_list[[i]], lose_ga_a50e_list[[i]], lose_ga_d50e_list[[i]], lose_ga_d25e_list[[i]], lose_ga_acc_list[[i]],lose_ga_a25c_list[[i]], lose_ga_a50c_list[[i]], lose_ga_d50c_list[[i]], lose_ga_d25c_list[[i]])
+}
+
+# Drawing #
+draw_ga_type_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_ga_type_list[[i]] <- bind_cols(draw_ga_ace_list[[i]], draw_ga_a25e_list[[i]], draw_ga_a50e_list[[i]], draw_ga_d50e_list[[i]], draw_ga_d25e_list[[i]], draw_ga_acc_list[[i]], draw_ga_a25c_list[[i]], draw_ga_a50c_list[[i]], draw_ga_d50c_list[[i]], draw_ga_d25c_list[[i]])
+}
+```
+
+#### 6. MOVEMENT EFFECT PER ATTACK TYPE PER LOCATION
+##### Create table to identify movement effects in AC in established attacks and convert to ratios for comparison
+```{r ME_ACE function}
+# AC Movement Effect Established #
+me_ace_f <- function(x){
+  if (any(grepl("AC Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to AC and save as separate data frame #
+me_ace <- filter(x, Location == "AC Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_ace <- table(me_ace$Match_Team, me_ace$Effect)
+
+# convert to data frame #
+me_ace <- as.data.frame.matrix(me_ace)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_ace[e[!(e %in% colnames(me_ace))]] = 0.75
+
+# rename all columns with prefix ACE #
+colnames(me_ace) <- paste("ACE", colnames(me_ace), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_ace <- round(mutate(me_ace, ACE_Main_Gain = (ACE_Maintain/ACE_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #      
+me_ace <- round(mutate(me_ace, ACE_Retain_Turnover = (ACE_Maintain+ACE_Gain)/ACE_Turnover), digits = 2)
+
+# select columns for analysis #
+me_ace <- select(me_ace, ACE_Main_Gain, ACE_Retain_Turnover)
+
+return(me_ace)
+  } else {(me_ace <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("ACE_Main_Gain", "ACE_Retain_Turnover")))
+  return(me_ace)}
+}
+
+# Winning #
+win_me_ace_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_me_ace_list[[i]] <- me_ace_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_me_ace_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_me_ace_list[[i]] <- me_ace_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_me_ace_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_me_ace_list[[i]] <- me_ace_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in AC in counter attacks and convert to ratios for comparison
+```{r ME_ACC function}
+# AC Movement Effect Counter #
+me_acc_f <- function(x){
+  if (any(grepl("AC Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to AC and save as separate data frame #
+me_acc <- filter(x, Location == "AC Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_acc <- table(me_acc$Match_Team, me_acc$Effect)
+
+# convert to data frame #
+me_acc <- as.data.frame.matrix(me_acc)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_acc[e[!(e %in% colnames(me_acc))]] = 0.75
+
+# rename all columns with prefix ACC #
+colnames(me_acc) <- paste("ACC", colnames(me_acc), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_acc <- round(mutate(me_acc, ACC_Main_Gain = (ACC_Maintain/ACC_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #     
+me_acc <- round(mutate(me_acc, ACC_Retain_Turnover = (ACC_Maintain+ACC_Gain)/ACC_Turnover), digits = 2)
+
+# select columns for analysis #
+me_acc <- select(me_acc, ACC_Main_Gain, ACC_Retain_Turnover)
+
+return(me_acc)
+  } else {(me_acc <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("ACC_Main_Gain", "ACC_Retain_Turnover")))
+  return(me_acc)}
+}
+
+# Winning #
+win_me_acc_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_me_acc_list[[i]] <- me_acc_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_me_acc_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_me_acc_list[[i]] <- me_acc_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_me_acc_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_me_acc_list[[i]] <- me_acc_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in A25 in established attacks and convert to ratios for comparison
+```{r ME_A25E function}
+# A25 Movement Effect Established #
+me_a25e_f <- function(x){
+  if (any(grepl("A25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A25 and save as separate data frame #
+me_a25e <- filter(x, Location == "A25 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_a25e <- table(me_a25e$Match_Team, me_a25e$Effect)
+
+# convert to data frame #
+me_a25e <- as.data.frame.matrix(me_a25e)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_a25e[e[!(e %in% colnames(me_a25e))]] = 0.75
+
+# rename all columns with prefix A25E #
+colnames(me_a25e) <- paste("A25E", colnames(me_a25e), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_a25e <- round(mutate(me_a25e, A25E_Main_Gain = (A25E_Maintain/A25E_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #      
+me_a25e <- round(mutate(me_a25e, A25E_Retain_Turnover = (A25E_Maintain+A25E_Gain)/A25E_Turnover), digits = 2)
+
+# select columns for analysis #
+me_a25e <- select(me_a25e, A25E_Main_Gain, A25E_Retain_Turnover)
+
+return(me_a25e)
+  } else {(me_a25e <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("A25E_Main_Gain", "A25E_Retain_Turnover")))
+  return(me_a25e)}
+}
+
+# Winning #
+win_me_a25e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_me_a25e_list[[i]] <- me_a25e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_me_a25e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_me_a25e_list[[i]] <- me_a25e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_me_a25e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_me_a25e_list[[i]] <- me_a25e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in A25 in counter attacks and convert to ratios for comparison
+```{r ME_A25C function}
+# A25 Movement Effect Counter #
+me_a25c_f <- function(x){
+  if (any(grepl("A25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A25 and save as separate data frame #
+me_a25c <- filter(x, Location == "A25 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_a25c <- table(me_a25c$Match_Team, me_a25c$Effect)
+
+# convert to data frame #
+me_a25c <- as.data.frame.matrix(me_a25c)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_a25c[e[!(e %in% colnames(me_a25c))]] = 0.75
+
+# rename all columns with prefix A25C #
+colnames(me_a25c) <- paste("A25C", colnames(me_a25c), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_a25c <- round(mutate(me_a25c, A25C_Main_Gain = (A25C_Maintain/A25C_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #      
+me_a25c <- round(mutate(me_a25c, A25C_Retain_Turnover = (A25C_Maintain+A25C_Gain)/A25C_Turnover), digits = 2)
+
+# select columns for analysis #
+me_a25c <- select(me_a25c, A25C_Main_Gain, A25C_Retain_Turnover)
+
+return(me_a25c)
+  } else {(me_a25c <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("A25C_Main_Gain", "A25C_Retain_Turnover")))
+  return(me_a25c)}
+}
+
+# Winning #
+win_me_a25c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_me_a25c_list[[i]] <- me_a25c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_me_a25c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_me_a25c_list[[i]] <- me_a25c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_me_a25c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_me_a25c_list[[i]] <- me_a25c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in A50 in established attacks and convert to ratios for comparison
+```{r ME_A50E function}
+# A50 Movement Effect Established #
+me_a50e_f <- function(x){
+   if (any(grepl("A50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A50 and save as separate data frame #
+me_a50e <- filter(x, Location == "A50 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_a50e <- table(me_a50e$Match_Team, me_a50e$Effect)
+
+# convert to data frame #
+me_a50e <- as.data.frame.matrix(me_a50e)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_a50e[e[!(e %in% colnames(me_a50e))]] = 0.75
+
+# rename all columns with prefix A50E #
+colnames(me_a50e) <- paste("A50E", colnames(me_a50e), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_a50e <- round(mutate(me_a50e, A50E_Main_Gain = (A50E_Maintain/A50E_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #       
+me_a50e <- round(mutate(me_a50e, A50E_Retain_Turnover = (A50E_Maintain+A50E_Gain)/A50E_Turnover), digits = 2)
+
+# select columns for analysis #
+me_a50e <- select(me_a50e, A50E_Main_Gain, A50E_Retain_Turnover)
+
+return(me_a50e)
+   } else {(me_a50e <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("A50E_Main_Gain", "A50E_Retain_Turnover")))
+  return(me_a50e)}
+}
+
+# Winning #
+win_me_a50e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_me_a50e_list[[i]] <- me_a50e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_me_a50e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_me_a50e_list[[i]] <- me_a50e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_me_a50e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_me_a50e_list[[i]] <- me_a50e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in A50 in counter attacks and convert to ratios for comparison
+```{r ME_A50C function}
+# A50 Movement Effect Counter #
+me_a50c_f <- function(x){
+   if (any(grepl("A50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to A50 and save as separate data frame #
+me_a50c <- filter(x, Location == "A50 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_a50c <- table(me_a50c$Match_Team, me_a50c$Effect)
+
+# convert to data frame #
+me_a50c <- as.data.frame.matrix(me_a50c)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_a50c[e[!(e %in% colnames(me_a50c))]] = 0.75
+
+# rename all columns with prefix A50C #
+colnames(me_a50c) <- paste("A50C", colnames(me_a50c), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_a50c <- round(mutate(me_a50c, A50C_Main_Gain = (A50C_Maintain/A50C_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #       
+me_a50c <- round(mutate(me_a50c, A50C_Retain_Turnover = (A50C_Maintain+A50C_Gain)/A50C_Turnover), digits = 2)
+
+# select columns for analysis #
+me_a50c <- select(me_a50c, A50C_Main_Gain, A50C_Retain_Turnover)
+
+return(me_a50c)
+   } else {(me_a50c <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("A50C_Main_Gain", "A50C_Retain_Turnover")))
+  return(me_a50c)}
+}
+
+# Winning #
+win_me_a50c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_me_a50c_list[[i]] <- me_a50c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_me_a50c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_me_a50c_list[[i]] <- me_a50c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_me_a50c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_me_a50c_list[[i]] <- me_a50c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in D50 in established attacks and convert to ratios for comparison
+```{r ME_D50E function}
+# D50 Movement Effect Established #
+me_d50e_f <- function(x){
+  if (any(grepl("D50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D50 and save as separate data frame #
+me_d50e <- filter(x, Location == "D50 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_d50e <- table(me_d50e$Match_Team, me_d50e$Effect)
+
+# convert to data frame #
+me_d50e <- as.data.frame.matrix(me_d50e)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_d50e[e[!(e %in% colnames(me_d50e))]] = 0.75
+
+# rename all columns with prefix D50E #
+colnames(me_d50e) <- paste("D50E", colnames(me_d50e), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_d50e <- round(mutate(me_d50e, D50E_Main_Gain = (D50E_Maintain/D50E_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #    
+me_d50e <- round(mutate(me_d50e, D50E_Retain_Turnover = (D50E_Maintain+D50E_Gain)/D50E_Turnover), digits = 2)
+
+# select columns for analysis #
+me_d50e <- select(me_d50e, D50E_Main_Gain, D50E_Retain_Turnover)
+
+return(me_d50e)
+  } else {(me_d50e <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("D50E_Main_Gain", "D50E_Retain_Turnover")))
+  return(me_d50e)}
+}
+
+# Winning #
+win_me_d50e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_me_d50e_list[[i]] <- me_d50e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_me_d50e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_me_d50e_list[[i]] <- me_d50e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_me_d50e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_me_d50e_list[[i]] <- me_d50e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in D50 in counter attacks and convert to ratios for comparison
+```{r ME_D50C function}
+# D50 Movement Effect Counter #
+me_d50c_f <- function(x){
+  if (any(grepl("D50 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D50 and save as separate data frame #
+me_d50c <- filter(x, Location == "D50 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_d50c <- table(me_d50c$Match_Team, me_d50c$Effect)
+
+# convert to data frame #
+me_d50c <- as.data.frame.matrix(me_d50c)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_d50c[e[!(e %in% colnames(me_d50c))]] = 0.75
+
+# rename all columns with prefix D50C #
+colnames(me_d50c) <- paste("D50C", colnames(me_d50c), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_d50c <- round(mutate(me_d50c, D50C_Main_Gain = (D50C_Maintain/D50C_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #      
+me_d50c <- round(mutate(me_d50c, D50C_Retain_Turnover = (D50C_Maintain+D50C_Gain)/D50C_Turnover), digits = 2)
+
+# select columns for analysis #
+me_d50c <- select(me_d50c, D50C_Main_Gain, D50C_Retain_Turnover)
+
+return(me_d50c)
+  } else {(me_d50c <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("D50C_Main_Gain", "D50C_Retain_Turnover")))
+  return(me_d50c)}
+}
+
+# Winning #
+win_me_d50c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_me_d50c_list[[i]] <- me_d50c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_me_d50c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_me_d50c_list[[i]] <- me_d50c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_me_d50c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_me_d50c_list[[i]] <- me_d50c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in D25 in established attacks and convert to ratios for comparison
+```{r ME_D25E function}
+# D25 Movement Effect Established #
+me_d25e_f <- function(x){
+  if (any(grepl("D25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D25 and save as separate data frame #
+me_d25e <- filter(x, Location == "D25 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_d25e <- table(me_d25e$Match_Team, me_d25e$Effect)
+
+# convert to data frame #
+me_d25e <- as.data.frame.matrix(me_d25e)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_d25e[e[!(e %in% colnames(me_d25e))]] = 0.75
+
+# rename all columns with prefix D25E #
+colnames(me_d25e) <- paste("D25E", colnames(me_d25e), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_d25e <- round(mutate(me_d25e, D25E_Main_Gain = (D25E_Maintain/D25E_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #      
+me_d25e <- round(mutate(me_d25e, D25E_Retain_Turnover = (D25E_Maintain+D25E_Gain)/D25E_Turnover), digits = 2)
+
+# select columns for analysis #
+me_d25e <- select(me_d25e, D25E_Main_Gain, D25E_Retain_Turnover)
+
+return(me_d25e)
+  } else {(me_d25e <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("D25E_Main_Gain", "D25E_Retain_Turnover")))
+  return(me_d25e)}
+}
+
+# Winning #
+win_me_d25e_list <- list()
+for (i in seq_along(win_game_actions_e_list)){
+  win_me_d25e_list[[i]] <- me_d25e_f(win_game_actions_e_list[[i]])
+}
+
+# Losing #
+lose_me_d25e_list <- list()
+for (i in seq_along(lose_game_actions_e_list)){
+  lose_me_d25e_list[[i]] <- me_d25e_f(lose_game_actions_e_list[[i]])
+}
+
+# Drawing #
+draw_me_d25e_list <- list()
+for (i in seq_along(draw_game_actions_e_list)){
+  draw_me_d25e_list[[i]] <- me_d25e_f(draw_game_actions_e_list[[i]])
+}
+```
+
+##### Create table to identify movement effects in D25 in counter attacks and convert to ratios for comparison
+```{r ME_D25C function}
+# D25 Movement Effect Counter #
+me_d25c_f <- function(x){
+  if (any(grepl("D25 Att", x$Location))){
+# extract from Game_Actions data frame only rows referring to D25 and save as separate data frame #
+me_d25c <- filter(x, Location == "D25 Att")
+
+# create table with Teams as rows and Movement Effects as columns #
+me_d25c <- table(me_d25c$Match_Team, me_d25c$Effect)
+
+# convert to data frame #
+me_d25c <- as.data.frame.matrix(me_d25c)
+
+# list of movement effects #
+e <- c("Maintain", "Gain", "Penetrating", "Turnover")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+me_d25c[e[!(e %in% colnames(me_d25c))]] = 0.75
+
+# rename all columns with prefix D25C #
+colnames(me_d25c) <- paste("D25C", colnames(me_d25c), sep = "_")
+
+# create new column from ratio of maintain:gain #
+me_d25c <- round(mutate(me_d25c, D25C_Main_Gain = (D25C_Maintain/D25C_Gain)), digits = 2)
+
+# create new column from ratio of retain:turnover #     
+me_d25c <- round(mutate(me_d25c, D25C_Retain_Turnover = (D25C_Maintain+D25C_Gain)/D25C_Turnover), digits = 2)
+
+# select columns for analysis #
+me_d25c <- select(me_d25c, D25C_Main_Gain, D25C_Retain_Turnover)
+
+return(me_d25c)
+  } else {(me_d25c <- setNames(as.data.frame(matrix(c(2, 3), ncol = 2, nrow = 1)), c("D25C_Main_Gain", "D25C_Retain_Turnover")))
+  return(me_d25c)}
+}
+
+# Winning #
+win_me_d25c_list <- list()
+for (i in seq_along(win_game_actions_c_list)){
+  win_me_d25c_list[[i]] <- me_d25c_f(win_game_actions_c_list[[i]])
+}
+
+# Losing #
+lose_me_d25c_list <- list()
+for (i in seq_along(lose_game_actions_c_list)){
+  lose_me_d25c_list[[i]] <- me_d25c_f(lose_game_actions_c_list[[i]])
+}
+
+# Drawing #
+draw_me_d25c_list <- list()
+for (i in seq_along(draw_game_actions_c_list)){
+  draw_me_d25c_list[[i]] <- me_d25c_f(draw_game_actions_c_list[[i]])
+}
+```
+
+##### Create table to identify movement effects per game and select penetrating column
+```{r ME_Pene function}
+# penetrating actions per game per team #
+me_pene_f <- function(x){
+# create data frame with Teams as rows and Movement Effect as columns #
+me_pene <- as.data.frame.matrix(table(x$Match_Team, x$Effect))
+if (!"Penetrating" %in% colnames(me_pene)) {
+  me_pene$Penetrating = 0
+}
+
+# select column for analysis #
+me_pene <- select(me_pene, Penetrating)
+
+return(me_pene)
+}
+
+# Winning #
+win_me_pene_list <- list()
+for  (i in seq_along(win_game_actions_list)){
+  win_me_pene_list[[i]] <- me_pene_f(win_game_actions_list[[i]])
+}
+
+# Losing #
+lose_me_pene_list <- list()
+for  (i in seq_along(lose_game_actions_list)){
+  lose_me_pene_list[[i]] <- me_pene_f(lose_game_actions_list[[i]])
+}
+
+# Drawing #
+draw_me_pene_list <- list()
+for  (i in seq_along(draw_game_actions_list)){
+  draw_me_pene_list[[i]] <- me_pene_f(draw_game_actions_list[[i]])
+}
+```
+
+##### Join all teams movement effects per location per attack type data frames into one
+```{r ME function}
+# Movement Effects per location per attack type per team #
+
+# Winning #
+win_me_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_me_list[[i]] <- bind_cols(win_me_ace_list[[i]], win_me_a25e_list[[i]], win_me_a50e_list[[i]], win_me_d50e_list[[i]], win_me_d25e_list[[i]], win_me_acc_list[[i]], win_me_a25c_list[[i]], win_me_a50c_list[[i]], win_me_d50c_list[[i]], win_me_d25c_list[[i]], win_me_pene_list[[i]])
+}
+
+# Losing #
+lose_me_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_me_list[[i]] <- bind_cols(lose_me_ace_list[[i]], lose_me_a25e_list[[i]], lose_me_a50e_list[[i]], lose_me_d50e_list[[i]], lose_me_d25e_list[[i]], lose_me_acc_list[[i]], lose_me_a25c_list[[i]], lose_me_a50c_list[[i]], lose_me_d50c_list[[i]], lose_me_d25c_list[[i]], lose_me_pene_list[[i]])
+}
+
+# Drawing #
+draw_me_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_me_list[[i]] <- bind_cols(draw_me_ace_list[[i]], draw_me_a25e_list[[i]], draw_me_a50e_list[[i]], draw_me_d50e_list[[i]], draw_me_d25e_list[[i]], draw_me_acc_list[[i]], draw_me_a25c_list[[i]], draw_me_a50c_list[[i]], draw_me_d50c_list[[i]], draw_me_d25c_list[[i]], draw_me_pene_list[[i]])
+}
+```
+
+### STOPPAGES
+#### 7. FILTER STOPPAGES
+##### Extract stoppages rows, select and rename descriptive columns
+```{r stoppages function}
+stoppages_f <- function(x){
+# extract from all data (Game) rows referring to Stoppages and save as separate data frame (Stoppages) #
+stoppages <- filter(x, A == "Stoppages")
+
+# rename columns #
+stoppages <- plyr::rename(stoppages, c("descriptors..." = "Stop.Type", 
+                                       "...19" = "Restart.Speed", 
+                                       "...20" = "Match.Status", 
+                                       "...21" = "Match.Location", 
+                                       "...22" = "Quality.Opp", 
+                                       "...23" = "Location",
+                                       "...24" = "Attack.Type"))
+
+# remove unnecessary columns #
+stoppages <- select(stoppages, Match_Team, Opposition, Gender, Stop.Type, Restart.Speed, Match.Status, Match.Location, Quality.Opp, Location, Attack.Type)
+
+return(stoppages)
+}
+
+# Winning #
+win_stoppages_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_stoppages_list[[i]] <- stoppages_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_stoppages_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_stoppages_list[[i]] <- stoppages_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_stoppages_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_stoppages_list[[i]] <- stoppages_f(gc_draw_list[[i]])
+}
+```
+
+##### Extract stoppages performed during established attacks
+```{r stoppages e}
+# filter for attack type #
+
+# Winning #
+win_stoppages_e_list <- list()
+for (i in seq_along(win_stoppages_list)){
+  win_stoppages_e_list[[i]] <- filter(win_stoppages_list[[i]], Attack.Type == "Established")
+}
+
+# Losing #
+lose_stoppages_e_list <- list()
+for (i in seq_along(lose_stoppages_list)){
+  lose_stoppages_e_list[[i]] <- filter(lose_stoppages_list[[i]], Attack.Type == "Established")
+}
+
+# Drawing #
+draw_stoppages_e_list <- list()
+for (i in seq_along(draw_stoppages_list)){
+  draw_stoppages_e_list[[i]] <- filter(draw_stoppages_list[[i]], Attack.Type == "Established")
+}
+
+```
+
+##### Extract stoppages performed during counter attacks
+```{r stoppages c}
+# filter for attack type #
+
+# Winning #
+win_stoppages_c_list <- list()
+for (i in seq_along(win_stoppages_list)){
+  win_stoppages_c_list[[i]] <- filter(win_stoppages_list[[i]], Attack.Type == "Counter")
+}
+
+# Losing #
+lose_stoppages_c_list <- list()
+for (i in seq_along(lose_stoppages_list)){
+  lose_stoppages_c_list[[i]] <- filter(lose_stoppages_list[[i]], Attack.Type == "Counter")
+}
+
+# Drawing #
+draw_stoppages_c_list <- list()
+for (i in seq_along(draw_stoppages_list)){
+  draw_stoppages_c_list[[i]] <- filter(draw_stoppages_list[[i]], Attack.Type == "Counter")
+}
+
+```
+
+#### 8. SET PIECES PER ATTACK TYPE
+##### Extract set pieces rows and create table to identify set pieces per attack type
+```{r sp_atn}
+# Set pieces #
+sp_atn_f <- function(x){
+    if (any(grepl("Penalty Corner", x$Stop.Type))){
+# extract from Stoppages data frame only rows referring to Set Piece and save as separate data frame #
+sp_atn <- filter(x, Stop.Type == "Penalty Corner")
+
+# create table with Teams as rows and Stoppage Types as columns #
+sp_atn <- table(sp_atn$Match_Team, sp_atn$Attack.Type)
+
+# convert to data frame #
+sp_atn <- as.data.frame.matrix(sp_atn)
+
+# list of stoppages #
+p <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+sp_atn[p[!(p %in% colnames(sp_atn))]] = 0
+
+# rename columns #
+sp_atn <- plyr::rename(sp_atn, c("Counter" = "SPN_Counter", 
+                                 "Established" = "SPN_Established", 
+                                 "Set Piece" = "SPN_Set_Piece"))
+
+return(sp_atn)
+  } else {(sp_atn <- setNames(as.data.frame(matrix(c(0, 0, 0), ncol = 3, nrow = 1)), c("SPN_Established", "SPN_Counter", "SPN_Set_Piece")))
+  return(sp_atn)}
+
+}
+
+# Winning #
+win_sp_atn_list <- list()
+for (i in seq_along(win_stoppages_list)){
+  win_sp_atn_list[[i]] <- sp_atn_f(win_stoppages_list[[i]])
+}
+
+# Losing #
+lose_sp_atn_list <- list()
+for (i in seq_along(lose_stoppages_list)){
+  lose_sp_atn_list[[i]] <- sp_atn_f(lose_stoppages_list[[i]])
+}
+
+# Drawing #
+draw_sp_atn_list <- list()
+for (i in seq_along(draw_stoppages_list)){
+  draw_sp_atn_list[[i]] <- sp_atn_f(draw_stoppages_list[[i]])
+}
+```
+
+#### 9. STOPPAGES PER ATTACK TYPE
+##### Create table to identify stoppages per attack type, convert to percentages and identify total stoppages per game
+```{r S_AT function}
+s_at_f <- function(x){
+  if (nrow(x) >1){
+# create table with Teams as rows and Attack Types as columns #
+s_at <- table(x$Match_Team, x$Attack.Type)
+
+# transform to percentages (% Stoppages  per Attack Type) #
+s_at <- round(prop.table(s_at) * 100, digits = 2)
+
+# convert to data frame #
+s_at <- as.data.frame.matrix(s_at)
+
+# list of attack types #
+aa <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+s_at[aa[!(aa %in% colnames(s_at))]] = 0
+
+# add column with total number of stoppages by counting number of rows in Stoppages #
+# data frame #
+s_at <- mutate(s_at, S_Total = nrow(x))
+
+s_at <- plyr::rename(s_at, c("Counter" = "S_Counter", 
+                             "Established" = "S_Established", 
+                             "Set Piece" = "S_Set_Piece"))
+
+return(s_at)
+  } else {(s_at <- setNames(as.data.frame(matrix(c(0, 0, 0, 0), ncol = 4, nrow = 1)), c("S_Established", "S_Counter", "S_Set_Piece", "T_Total")))
+  return(s_at)}
+}
+
+# Winning #
+win_s_at_list <- list()
+for (i in seq_along(win_stoppages_list)){
+  win_s_at_list[[i]] <- s_at_f(win_stoppages_list[[i]])
+}
+
+# Losing #
+lose_s_at_list <- list()
+for (i in seq_along(lose_stoppages_list)){
+  lose_s_at_list[[i]] <- s_at_f(lose_stoppages_list[[i]])
+}
+
+# Drawing #
+draw_s_at_list <- list()
+for (i in seq_along(draw_stoppages_list)){
+  draw_s_at_list[[i]] <- s_at_f(draw_stoppages_list[[i]])
+}
+```
+
+#### 10. STOPPAGES PER ATTACK TYPE PER LOCATION
+##### Create table to identify stoppages per location in established attacks and convert to percentages for comparison
+```{r stoppages loc e function}
+# stoppages established #
+s_le_f <- function(x){
+  if (nrow(x) >1){
+# create table with Teams as rows and Stoppages Locations as columns #
+s_le <- table(x$Match_Team, x$Location)
+
+# transform to percentages (% Stoppages  per Location) #
+s_le <- round(prop.table(s_le) * 100, digits = 2)
+
+# convert to data frame #
+s_le <- as.data.frame.matrix(s_le)
+
+# list of stoppages #
+u <- c("AC Att", "A25 Att", "A50 Att", "D50 Att", "D25 Att")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+s_le[u[!(u %in% colnames(s_le))]] = 0
+
+s_le <- plyr::rename(s_le, c("AC Att" = "S_ACE", 
+                             "A25 Att" = "S_A25E", 
+                             "A50 Att" = "S_A50E", 
+                             "D50 Att" = "S_D50E", 
+                             "D25 Att" = "S_D25E"))
+
+return(s_le)
+  } else {(s_le <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("S_ACE", "S_A25E", "S_A50E", "S_D50E", "S_D25E")))
+  return(s_le)}
+}
+
+# Winning #
+win_s_le_list <- list()
+for (i in seq_along(win_stoppages_e_list)){
+  win_s_le_list[[i]] <- s_le_f(win_stoppages_e_list[[i]])
+}
+
+# Losing #
+lose_s_le_list <- list()
+for (i in seq_along(lose_stoppages_e_list)){
+  lose_s_le_list[[i]] <- s_le_f(lose_stoppages_e_list[[i]])
+}
+
+# Drawing #
+draw_s_le_list <- list()
+for (i in seq_along(draw_stoppages_e_list)){
+  draw_s_le_list[[i]] <- s_le_f(draw_stoppages_e_list[[i]])
+}
+```
+
+##### Create table to identify stoppages per location in counter attacks and convert to percentages for comparison
+```{r stoppages loc c function}
+# stoppages counter #
+s_lc_f <- function(x){
+  if (nrow(x) >1){
+# create table with Teams as rows and Stoppages Locations as columns #
+s_lc <- table(x$Match_Team, x$Location)
+
+#transform to percentages (% Stoppages  per Location) #
+s_lc <- round(prop.table(s_lc) * 100, digits = 2)
+
+# convert to data frame #
+s_lc <- as.data.frame.matrix(s_lc)
+
+# list of stoppages #
+u <- c("AC Att", "A25 Att", "A50 Att", "D50 Att", "D25 Att")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+s_lc[u[!(u %in% colnames(s_lc))]] = 0
+
+s_lc <- plyr::rename(s_lc, c("AC Att" = "S_ACC", 
+                             "A25 Att" = "S_A25C", 
+                             "A50 Att" = "S_A50C", 
+                             "D50 Att" = "S_D50C", 
+                             "D25 Att" = "S_D25C"))
+
+return(s_lc)
+  } else {(s_lc <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("S_ACC", "S_A25C", "S_A50C", "S_D50C", "S_D25C")))
+  return(s_lc)}
+}
+
+# Winning #
+win_s_lc_list <- list()
+for (i in seq_along(win_stoppages_c_list)){
+  win_s_lc_list[[i]] <- s_lc_f(win_stoppages_c_list[[i]])
+}
+
+# Losing #
+lose_s_lc_list <- list()
+for (i in seq_along(lose_stoppages_c_list)){
+  lose_s_lc_list[[i]] <- s_lc_f(lose_stoppages_c_list[[i]])
+}
+
+# Drawing #
+draw_s_lc_list <- list()
+for (i in seq_along(draw_stoppages_c_list)){
+  draw_s_lc_list[[i]] <- s_lc_f(draw_stoppages_c_list[[i]])
+}
+```
+
+##### Join all teams stoppages per attack type data frames into one
+```{r S_Loc function}
+# Stoppages Attack Types Total #
+
+# Winning #
+win_s_loc_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_s_loc_list[[i]] <- bind_cols(win_s_le_list[[i]], win_s_lc_list[[i]])
+}
+
+# Losing #
+lose_s_loc_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_s_loc_list[[i]] <- bind_cols(lose_s_le_list[[i]], lose_s_lc_list[[i]])
+}
+
+# Drawing #
+draw_s_loc_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_s_loc_list[[i]] <- bind_cols(draw_s_le_list[[i]], draw_s_lc_list[[i]])
+}
+```
+
+#### 11. RESTART SPEED PER LOCATION PER ESTABLISHED ATTACK
+##### Create table to identify restart speeds in A25 in established attacks and convert to ratio for comparison
+```{r RS_A25E function}
+# A25 Restart Speed Established #
+rs_a25e_f <- function(x){
+  if (any(grepl("A25 Att", x$Location))){
+# extract from Stoppages data frame only rows referring to A25 and save as separate data frame #
+rs_a25e <- filter(x, Location == "A25 Att")
+
+# create table with Teams as rows and Restart Speed as columns #
+rs_a25e <- table(rs_a25e$Match_Team, rs_a25e$Restart.Speed)
+
+# convert to data frame #
+rs_a25e <- as.data.frame.matrix(rs_a25e)
+
+# list of speeds #
+k <- c("Fast", "Slow")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+rs_a25e[k[!(k %in% colnames(rs_a25e))]] = 0.75
+
+# rename all columns with prefix A25 #
+colnames(rs_a25e) <- paste("A25", colnames(rs_a25e), sep = "_")
+
+# create new column from ratio of slow:fast #
+rs_a25e <- round(mutate(rs_a25e, A25E_S_F = (A25_Slow/A25_Fast)), digits = 2)
+
+# select column for analysis #
+rs_a25e <- select(rs_a25e, A25E_S_F)
+
+return(rs_a25e)
+  } else {(rs_a25e <- setNames(as.data.frame(matrix(c(5), ncol = 1, nrow = 1)), c("A25E_S_F")))
+  return(rs_a25e)}
+}
+
+# Winning #
+win_rs_a25e_list <- list()
+for (i in seq_along(win_stoppages_e_list)){
+  win_rs_a25e_list[[i]] <- rs_a25e_f(win_stoppages_e_list[[i]])
+}
+
+# Losing #
+lose_rs_a25e_list <- list()
+for (i in seq_along(lose_stoppages_e_list)){
+  lose_rs_a25e_list[[i]] <- rs_a25e_f(lose_stoppages_e_list[[i]])
+}
+
+# Drawing #
+draw_rs_a25e_list <- list()
+for (i in seq_along(draw_stoppages_e_list)){
+  draw_rs_a25e_list[[i]] <- rs_a25e_f(draw_stoppages_e_list[[i]])
+}
+```
+
+##### Create table to identify restart speeds in A50 in established attacks and convert to ratio for comparison
+```{r RS_A50E function}
+# A50 Restart Speed Established #
+rs_a50e_f <- function(x){
+   if (any(grepl("A50 Att", x$Location))){
+# extract from Stoppages data frame only rows referring to A50 and save as separate data frame #
+rs_a50e <- filter(x, Location == "A50 Att")
+
+# create table with Teams as rows and Restart Speed as columns #
+rs_a50e <- table(rs_a50e$Match_Team, rs_a50e$Restart.Speed)
+
+# convert to data frame #
+rs_a50e <- as.data.frame.matrix(rs_a50e)
+
+# list of speeds #
+k <- c("Fast", "Slow")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+rs_a50e[k[!(k %in% colnames(rs_a50e))]] = 0.75
+
+# rename all columns with prefix A50 #
+colnames(rs_a50e) <- paste("A50", colnames(rs_a50e), sep = "_")
+
+# create new column from ratio of slow:fast #
+rs_a50e <- round(mutate(rs_a50e, A50E_S_F = (A50_Slow/A50_Fast)), digits = 2)
+
+# select column for analysis #
+rs_a50e <- select(rs_a50e, A50E_S_F)
+
+return(rs_a50e)
+   } else {(rs_a50e <- setNames(as.data.frame(matrix(c(2), ncol = 1, nrow = 1)), c("A50E_S_F")))
+  return(rs_a50e)}
+}
+
+# Winning #
+win_rs_a50e_list <- list()
+for (i in seq_along(win_stoppages_e_list)){
+  win_rs_a50e_list[[i]] <- rs_a50e_f(win_stoppages_e_list[[i]])
+}
+
+# Losing #
+lose_rs_a50e_list <- list()
+for (i in seq_along(lose_stoppages_e_list)){
+  lose_rs_a50e_list[[i]] <- rs_a50e_f(lose_stoppages_e_list[[i]])
+}
+
+# Drawing #
+draw_rs_a50e_list <- list()
+for (i in seq_along(draw_stoppages_e_list)){
+  draw_rs_a50e_list[[i]] <- rs_a50e_f(draw_stoppages_e_list[[i]])
+}
+```
+
+##### Create table to identify restart speeds in D50 in established attacks and convert to ratio for comparison
+```{r RS_D50E function}
+# D50 Restart Speed Established #
+rs_d50e_f <- function(x){
+  if (any(grepl("D50 Att", x$Location))){
+# extract from Stoppages data frame only rows referring to D50 and save as separate data frame #
+rs_d50e <- filter(x, Location == "D50 Att")
+
+# create table with Teams as rows and Restart Speed as columns #
+rs_d50e <- table(rs_d50e$Match_Team, rs_d50e$Restart.Speed)
+
+# convert to data frame #
+rs_d50e <- as.data.frame.matrix(rs_d50e)
+
+# list of speeds #
+k <- c("Fast", "Slow")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+rs_d50e[k[!(k %in% colnames(rs_d50e))]] = 0.75
+
+# rename all columns with prefix D50 #
+colnames(rs_d50e) <- paste("D50", colnames(rs_d50e), sep = "_")
+
+# create new column from ratio of slow:fast #
+rs_d50e <- round(mutate(rs_d50e, D50E_S_F = (D50_Slow/D50_Fast)), digits = 2)
+
+# select column for analysis #
+rs_d50e <- select(rs_d50e, D50E_S_F)
+
+return(rs_d50e)
+  } else {(rs_d50e <- setNames(as.data.frame(matrix(c(5), ncol = 1, nrow = 1)), c("D50E_S_F")))
+  return(rs_d50e)}
+}
+
+# Winning #
+win_rs_d50e_list <- list()
+for (i in seq_along(win_stoppages_e_list)){
+  win_rs_d50e_list[[i]] <- rs_d50e_f(win_stoppages_e_list[[i]])
+}
+
+# Losing #
+lose_rs_d50e_list <- list()
+for (i in seq_along(lose_stoppages_e_list)){
+  lose_rs_d50e_list[[i]] <- rs_d50e_f(lose_stoppages_e_list[[i]])
+}
+
+# Drawing #
+draw_rs_d50e_list <- list()
+for (i in seq_along(draw_stoppages_e_list)){
+  draw_rs_d50e_list[[i]] <- rs_d50e_f(draw_stoppages_e_list[[i]])
+}
+```
+
+##### Create table to identify restart speeds in D25 in established attacks and convert to ratio for comparison
+```{r RS_D25E function}
+# D25 Restart Speed Established #
+rs_d25e_f <- function(x){
+  if (any(grepl("D25 Att", x$Location))){
+# extract from Stoppages data frame only rows referring to D25 and save as separate data frame #
+rs_d25e <- filter(x, Location == "D25 Att")
+
+# create table with Teams as rows and Restart Speed as columns #
+rs_d25e <- table(rs_d25e$Match_Team, rs_d25e$Restart.Speed)
+
+# convert to data frame #
+rs_d25e <- as.data.frame.matrix(rs_d25e)
+
+# list of speeds #
+k <- c("Fast", "Slow")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+rs_d25e[k[!(k %in% colnames(rs_d25e))]] = 0.75
+
+# rename all columns with prefix D25 #
+colnames(rs_d25e) <- paste("D25", colnames(rs_d25e), sep = "_")
+
+# create new column from ratio of slow:fast #
+rs_d25e <- round(mutate(rs_d25e, D25E_S_F = (D25_Slow/D25_Fast)), digits = 2)
+
+# select column for analysis #
+rs_d25e <- select(rs_d25e, D25E_S_F)
+
+return(rs_d25e)
+  } else {(rs_d25e <- setNames(as.data.frame(matrix(c(10), ncol = 1, nrow = 1)), c("D25E_S_F")))
+  return(rs_d25e)} 
+}
+
+# Winning #
+win_rs_d25e_list <- list()
+for (i in seq_along(win_stoppages_e_list)){
+  win_rs_d25e_list[[i]] <- rs_d25e_f(win_stoppages_e_list[[i]])
+}
+
+# Losing #
+lose_rs_d25e_list <- list()
+for (i in seq_along(lose_stoppages_e_list)){
+  lose_rs_d25e_list[[i]] <- rs_d25e_f(lose_stoppages_e_list[[i]])
+}
+
+# Drawing #
+draw_rs_d25e_list <- list()
+for (i in seq_along(draw_stoppages_e_list)){
+  draw_rs_d25e_list[[i]] <- rs_d25e_f(draw_stoppages_e_list[[i]])
+}
+```
+
+##### Join all restart speeds per location data frames into one
+```{r RS function}
+# Restart Speeds Total #
+
+# Winning #
+win_rs_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_rs_list[[i]] <- bind_cols(win_rs_a25e_list[[i]], win_rs_a50e_list[[i]], win_rs_d50e_list[[i]], win_rs_d25e_list[[i]])
+}
+
+# Losing #
+lose_rs_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_rs_list[[i]] <- bind_cols(lose_rs_a25e_list[[i]], lose_rs_a50e_list[[i]], lose_rs_d50e_list[[i]], lose_rs_d25e_list[[i]])
+}
+
+# Drawing #
+draw_rs_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_rs_list[[i]] <- bind_cols(draw_rs_a25e_list[[i]], draw_rs_a50e_list[[i]], draw_rs_d50e_list[[i]], draw_rs_d25e_list[[i]])
+}
+```
+
+### TURNOVERS
+#### 12. FILTER TURNOVERS
+##### Extract turnover rows, select and rename descriptive columns
+```{r turnovers function}
+turnovers_f <- function(x){
+# extract from all data (Game) rows referring to Turnovers and save as separate data #
+# frame (Turnovers) #
+turnovers <- filter(x, A == "Turnover")
+
+# rename columns #
+turnovers <- plyr::rename(turnovers, c("descriptors..." = "Type", 
+                                       "...19" = "Def.Pressure", 
+                                       "...20" = "TO.Location",
+                                       "...21" = "Match.Status", 
+                                       "...22" = "Match.Location", 
+                                       "...23" = "Quality.Opp", 
+                                       "...24" = "Location", 
+                                       "...25" = "Attack.Type"))
+
+# remove unnecessary columns #
+turnovers <- select(turnovers, Match_Team, Opposition, Gender, Type, Def.Pressure, TO.Location, Match.Status, Match.Location, Quality.Opp,Location, Attack.Type)
+
+return(turnovers)
+}
+
+# Winning #
+win_turnovers_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_turnovers_list[[i]] <- turnovers_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_turnovers_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_turnovers_list[[i]] <- turnovers_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_turnovers_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_turnovers_list[[i]] <- turnovers_f(gc_draw_list[[i]])
+}
+```
+
+#### 13. TURNOVERS PER ATTACK TYPE
+##### Create table to identify turnovers per attack type, convert to percentages and identify total turnovers per game
+```{r T_AT function}
+t_at_f <- function(x){
+  if (nrow(x) >1){
+# create table with Teams as rows and Attack Types as columns #
+t_at <- table(x$Match_Team, x$Attack.Type)
+
+# transform to percentages (% Turnovers per Attack Type) #
+t_at <- round(prop.table(t_at) * 100, digits = 2)
+
+# convert to data frame #
+t_at <- as.data.frame.matrix(t_at)
+
+# list of attack types #
+l <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+t_at[l[!(l %in% colnames(t_at))]] = 0
+
+# add column with total number of turnovers by counting number of rows in Turnovers #
+# data frame #
+t_at <- mutate(t_at, T_Total = nrow(x))
+
+t_at <- plyr::rename(t_at, c("Counter" = "T_Counter", 
+                             "Established" = "T_Established",
+                             "Set Piece" = "T_Set_Piece"))
+
+return(t_at)
+  } else {(t_at <- setNames(as.data.frame(matrix(c(0, 0, 0, 0), ncol = 4, nrow = 1)), c("T_Established", "T_Counter", "T_Set_Piece", "T_Total")))
+  return(t_at)}
+}
+
+# Winning #
+win_t_at_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_t_at_list[[i]] <- t_at_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_t_at_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_t_at_list[[i]] <- t_at_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_t_at_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_t_at_list[[i]] <- t_at_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Create table to identify turnovers per attack type
+```{r T_ATN function}
+t_atn_f <- function(x){
+  if (nrow(x) >1){
+# create table with Teams as rows and Turnover Attack Types as columns #
+t_atn <- table(x$Match_Team, x$Attack.Type)
+
+# convert to data frame #
+t_atn <- as.data.frame.matrix(t_atn)
+
+# list of attack types #
+l <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+t_atn[l[!(l %in% colnames(t_atn))]] = 0
+
+t_atn <- plyr::rename(t_atn, c("Counter" = "TN_Counter", 
+                               "Established" = "TN_Established", 
+                               "Set Piece" = "TN_Set_Piece"))
+
+return(t_atn)
+  } else {(t_atn <- setNames(as.data.frame(matrix(c(0, 0, 0), ncol = 3, nrow = 1)), c("TN_Established", "TN_Counter", "TN_Set_Piece")))
+  return(t_atn)}
+}
+
+# Winning #
+win_t_atn_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_t_atn_list[[i]] <- t_atn_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_t_atn_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_t_atn_list[[i]] <- t_atn_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_t_atn_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_t_atn_list[[i]] <- t_atn_f(draw_turnovers_list[[i]])
+}
+```
+
+#### 14. TURNOVER TYPES PER ATTACK TYPE
+##### Create table to identify turnover types in established attacks, convert to percentages and simplify into turnover type categories
+```{r T_E function}
+# Turnovers Established Attack #
+t_e_f <- function(x){
+  if (any(grepl("Established", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Established and save as separate data frame #
+t_e <- filter(x, Attack.Type == "Established")
+
+# create table with Teams as rows and Turnover types as columns #
+t_e <- table(t_e$Match_Team, t_e$Type)
+
+# transform to percentages (% turnover types used in Established) #
+t_e <- round(prop.table(t_e) * 100, digits = 2)
+
+# convert to data frame #
+t_e <- as.data.frame.matrix(t_e)
+
+# list of turnover types #
+m <- c("Tackle", "Intercept", "Miss Trap", "Missed Shot", "Blocked", "Lost Ball", "Out", "Free Hit", "Rebound")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+t_e[m[!(m %in% colnames(t_e))]] = 0
+
+# rename columns #
+t_e <- plyr::rename(t_e, c("Free Hit" = "Free_Hit", 
+                           "Miss Trap" = "Miss_Trap", 
+                           "Lost Ball" = "Lost_Ball", 
+                           "Missed Shot" = "Missed_Shot"))
+
+# rename all columns with prefix E #
+colnames(t_e) <- paste("E", colnames(t_e), sep = "_")
+
+# add new column with sum of categories #
+t_e <- round(mutate(t_e, TE_Stoppages = (E_Missed_Shot + E_Free_Hit + E_Out)), digits = 2) 
+
+t_e <- round(mutate(t_e, TE_Play = (E_Tackle + E_Intercept + E_Miss_Trap + E_Blocked + E_Lost_Ball + E_Rebound)), digits = 2) 
+
+# select column for analysis #
+t_e <- select(t_e, c(TE_Stoppages, TE_Play))
+
+return(t_e)
+  } else {(t_e <- setNames(as.data.frame(matrix(c(30, 70), ncol = 2, nrow = 1)), c("TE_Stoppages", "TE_Play")))
+  return(t_e)}
+}
+
+# Winning #
+win_t_e_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_t_e_list[[i]] <- t_e_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_t_e_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_t_e_list[[i]] <- t_e_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_t_e_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_t_e_list[[i]] <- t_e_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Create table to identify turnover types in counter attacks, convert to percentages and simplify into turnover type categories
+```{r T_C function}
+# Turnovers Counter Attack #
+t_c_f <- function(x){
+  if (any(grepl("Counter", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Counter and save as separate data frame #
+t_c <- filter(x, Attack.Type == "Counter")
+
+# create table with Teams as rows and Turnover types as columns #
+t_c <- table(t_c$Match_Team, t_c$Type)
+
+# transform to percentages (% turnover types used in Counter) #
+t_c <- round(prop.table(t_c) * 100, digits = 2)
+
+# convert to data frame #
+t_c <- as.data.frame.matrix(t_c)
+
+# list of turnover types #
+m <- c("Tackle", "Intercept", "Miss Trap", "Missed Shot", "Blocked", "Lost Ball", "Out", "Free Hit", "Rebound")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+t_c[m[!(m %in% colnames(t_c))]] = 0
+
+# rename columns #
+t_c <- plyr::rename(t_c, c("Free Hit" = "Free_Hit", 
+                           "Miss Trap" = "Miss_Trap", 
+                           "Lost Ball" = "Lost_Ball", 
+                           "Missed Shot" = "Missed_Shot"))
+
+# rename all columns with prefix C #
+colnames(t_c) <- paste("C", colnames(t_c), sep = "_")
+
+# add new column with sum of categories #
+t_c <- round(mutate(t_c, TC_Stoppages = (C_Missed_Shot + C_Free_Hit + C_Out)), digits = 2) 
+
+t_c <- round(mutate(t_c, TC_Play = (C_Tackle + C_Intercept + C_Miss_Trap + C_Blocked + C_Lost_Ball + C_Rebound)), digits = 2) 
+
+# select column for analysis #
+t_c <- select(t_c, c(TC_Stoppages, TC_Play))
+
+return(t_c)
+  } else {(t_c <- setNames(as.data.frame(matrix(c(20, 80), ncol = 2, nrow = 1)), c("TC_Stoppages", "TC_Play")))
+  return(t_c)}
+}
+
+# Winning #
+win_t_c_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_t_c_list[[i]] <- t_c_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_t_c_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_t_c_list[[i]] <- t_c_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_t_c_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_t_c_list[[i]] <- t_c_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Join all teams turnover types per attack type data frames into one
+```{r T_Type function}
+# Turnover Types Total #
+
+# Winning #
+win_t_type_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_t_type_list[[i]] <- bind_cols(win_t_e_list[[i]], win_t_c_list[[i]])
+}
+
+# Losing #
+lose_t_type_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_t_type_list[[i]] <- bind_cols(lose_t_e_list[[i]], lose_t_c_list[[i]])
+}
+
+# Drawing #
+draw_t_type_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_t_type_list[[i]] <- bind_cols(draw_t_e_list[[i]], draw_t_c_list[[i]])
+}
+```
+
+#### 15. TURNOVERS PER PRESSURE PER ATTACK TYPE
+##### Create table to identify defensive pressure per turnovers in established attacks and convert to percentages
+```{r TP_E function}
+# turnover pressure established #
+tp_e_f <- function(x){
+  if (any(grepl("Established", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Established and save as separate data frame #
+tp_e <- filter(x, Attack.Type == "Established")
+
+# create table with Teams as rows and Pressure as columns #
+tp_e <- table(tp_e$Match_Team, tp_e$Def.Pressure)
+
+# transform to percentages (% Pressure used in Established) #
+tp_e <- round(prop.table(tp_e) * 100, digits = 2)
+
+# convert to data frame #
+tp_e <- as.data.frame.matrix(tp_e)
+
+# list of turnover pressures #
+n <- c("High", "Medium", "Low")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+tp_e[n[!(n %in% colnames(tp_e))]] = 0
+
+# rename all columns with prefix TE #
+colnames(tp_e) <- paste("TE", colnames(tp_e), sep = "_")
+
+return(tp_e)
+  } else {(tp_e <- setNames(as.data.frame(matrix(c(0, 0, 0), ncol = 3, nrow = 1)), c("TE_High", "TE_Medium", "TE_Low")))
+  return(tp_e)}
+}
+
+# Winning #
+win_tp_e_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_tp_e_list[[i]] <- tp_e_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_tp_e_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_tp_e_list[[i]] <- tp_e_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_tp_e_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_tp_e_list[[i]] <- tp_e_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Create table to identify defensive pressure per turnovers in counter attacks and convert to percentages
+```{r TP_C function}
+# turnover pressure counter #
+tp_c_f <- function(x){
+  if (any(grepl("Counter", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Counter and save as separate data frame #
+tp_c <- filter(x, Attack.Type == "Counter")
+
+# create table with Teams as rows and Pressure as columns #
+tp_c <- table(tp_c$Match_Team, tp_c$Def.Pressure)
+
+# transform to percentages (% Pressure used in Counter) #
+tp_c <- round(prop.table(tp_c) * 100, digits = 2)
+
+# convert to data frame #
+tp_c <- as.data.frame.matrix(tp_c)
+
+# list of turnover pressures #
+n <- c("High", "Medium", "Low")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+tp_c[n[!(n %in% colnames(tp_c))]] = 0
+
+# rename all columns with prefix TC #
+colnames(tp_c) <- paste("TC", colnames(tp_c), sep = "_")
+
+return(tp_c)
+  } else {(tp_c <- setNames(as.data.frame(matrix(c(0, 0, 0), ncol = 3, nrow = 1)), c("TC_High", "TC_Medium", "TC_Low")))
+  return(tp_c)}
+}
+
+# Winning #
+win_tp_c_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_tp_c_list[[i]] <- tp_c_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_tp_c_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_tp_c_list[[i]] <- tp_c_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_tp_c_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_tp_c_list[[i]] <- tp_c_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Join all teams turnover pressures per attack type data frames into one
+```{r TP function}
+# Turnover Pressure Total #
+
+# Winning #
+win_tp_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_tp_list[[i]] <- bind_cols(win_tp_e_list[[i]], win_tp_c_list[[i]])
+}
+
+# Losing #
+lose_tp_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_tp_list[[i]] <- bind_cols(lose_tp_e_list[[i]], lose_tp_c_list[[i]])
+}
+
+# Drawing #
+draw_tp_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_tp_list[[i]] <- bind_cols(draw_tp_e_list[[i]], draw_tp_c_list[[i]])
+}
+```
+
+#### 16. TURNOVERS PER ATTACK TYPE PER LOCATION
+##### Create table to identify turnover locations in established attacks and convert to percentages
+```{r TL_E function}
+# turnover locations established #
+tl_e_f <- function(x){
+  if (any(grepl("Established", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Established and save as separate data frame #
+tl_e <- filter(x, Attack.Type == "Established")
+
+# create table with Teams as rows and Location as columns #
+tl_e <- table(tl_e$Match_Team, tl_e$TO.Location)
+
+# transform to percentages (% Location per turnover in Established) #
+tl_e <- round(prop.table(tl_e) * 100, digits = 2)
+
+# convert to data frame #
+tl_e <- as.data.frame.matrix(tl_e)
+
+# list of turnover locations #
+o <- c("AC", "A25", "A50", "D50", "D25")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+tl_e[o[!(o %in% colnames(tl_e))]] = 0
+
+# rename all columns with prefix TE #
+colnames(tl_e) <- paste("TE", colnames(tl_e), sep = "_")
+
+return(tl_e)
+  } else {(tl_e <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("TE_AC", "TE_A25", "TE_A50", "TE_D50", "TE_D25")))
+  return(tl_e)}
+}
+
+# Winning #
+win_tl_e_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_tl_e_list[[i]] <- tl_e_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_tl_e_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_tl_e_list[[i]] <- tl_e_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_tl_e_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_tl_e_list[[i]] <- tl_e_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Create table to identify turnover locations in counter attacks and convert to percentages
+```{r TL_C function}
+# Turnover locations counter #
+tl_c_f <- function(x){
+   if (any(grepl("Counter", x$Attack.Type))){
+# extract from Turnovers data frame only rows referring to Counter and save as separate data frame #
+tl_c <- filter(x, Attack.Type == "Counter")
+
+# create table with Teams as rows and Location as columns #
+tl_c <- table(tl_c$Match_Team, tl_c$TO.Location)
+
+# transform to percentages (% Location per turnover in Counter) #
+tl_c <- round(prop.table(tl_c) * 100, digits = 2)
+
+# convert to data frame #
+tl_c <- as.data.frame.matrix(tl_c)
+
+# list of turnover locations #
+o <- c("AC", "A25", "A50", "D50", "D25")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+tl_c[o[!(o %in% colnames(tl_c))]] = 0
+
+# rename all columns with prefix TC #
+colnames(tl_c) <- paste("TC", colnames(tl_c), sep = "_")
+
+return(tl_c)
+   } else {(tl_c <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("TC_AC", "TC_A25", "TC_A50", "TC_D50", "TC_D25")))
+  return(tl_c)}
+}
+
+# Winning #
+win_tl_c_list <- list()
+for (i in seq_along(win_turnovers_list)){
+  win_tl_c_list[[i]] <- tl_c_f(win_turnovers_list[[i]])
+}
+
+# Losing #
+lose_tl_c_list <- list()
+for (i in seq_along(lose_turnovers_list)){
+  lose_tl_c_list[[i]] <- tl_c_f(lose_turnovers_list[[i]])
+}
+
+# Drawing #
+draw_tl_c_list <- list()
+for (i in seq_along(draw_turnovers_list)){
+  draw_tl_c_list[[i]] <- tl_c_f(draw_turnovers_list[[i]])
+}
+```
+
+##### Join all teams turnover locations per attack type data frames into one
+```{r TL function}
+# Turnover Location Total #
+
+# Winning #
+win_tl_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_tl_list[[i]] <- bind_cols(win_tl_e_list[[i]], win_tl_c_list[[i]])
+}
+
+# Losing #
+lose_tl_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_tl_list[[i]] <- bind_cols(lose_tl_e_list[[i]], lose_tl_c_list[[i]])
+}
+
+# Drawing #
+draw_tl_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_tl_list[[i]] <- bind_cols(draw_tl_e_list[[i]], draw_tl_c_list[[i]])
+}
+```
+
+### GOAL SHOTS
+#### 17. FILTER GOAL SHOTS
+##### Extract goal shot rows, select and rename descriptive columns
+```{r goal_shots function}
+goal_shots_f <- function(x){
+# extract from all data (Game) rows referring to Goal Shots and save as separate data frame (Goal_Shots) #
+goal_shots <- filter(x, A == "Goal")
+
+# rename columns #
+goal_shots <- plyr::rename(goal_shots, c("...19" = "GS.Location", 
+                                         "...20" = "GS.Pressure",
+                                         "...21" = "Outcome", 
+                                         "...22" = "Match.Status",
+                                         "...23" = "Match.Location", 
+                                         "...24" = "Quality.Opp", 
+                                         "...25" = "Location", 
+                                         "...26" = "Attack.Type"))
+
+# remove unnecessary columns #
+goal_shots <- select(goal_shots, Match_Team, Opposition, Gender, GS.Location, GS.Pressure, Outcome, Match.Status, Match.Location, Quality.Opp, Location, Attack.Type)
+
+return(goal_shots)
+}
+
+# Winning #
+win_goal_shots_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_goal_shots_list[[i]] <- goal_shots_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_goal_shots_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_goal_shots_list[[i]] <- goal_shots_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_goal_shots_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_goal_shots_list[[i]] <- goal_shots_f(gc_draw_list[[i]])
+}
+```
+
+##### Extract goal shots performed during established attacks
+```{r goal shots e}
+# filter for attack type #
+
+# Winning #
+win_goal_shots_e_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_goal_shots_e_list[[i]] <- filter(win_goal_shots_list[[i]], Attack.Type == "Established")
+}
+
+# Losing #
+lose_goal_shots_e_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_goal_shots_e_list[[i]] <- filter(lose_goal_shots_list[[i]], Attack.Type == "Established")
+}
+
+# Drawing #
+draw_goal_shots_e_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_goal_shots_e_list[[i]] <- filter(draw_goal_shots_list[[i]], Attack.Type == "Established")
+}
+```
+
+##### Extract goal shots performed during established attacks
+```{r goal shots c}
+# filter for attack type #
+
+# Winning #
+win_goal_shots_c_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_goal_shots_c_list[[i]] <- filter(win_goal_shots_list[[i]], Attack.Type == "Counter")
+}
+
+# Losing #
+lose_goal_shots_c_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_goal_shots_c_list[[i]] <- filter(lose_goal_shots_list[[i]], Attack.Type == "Counter")
+}
+
+# Drawing #
+draw_goal_shots_c_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_goal_shots_c_list[[i]] <- filter(draw_goal_shots_list[[i]], Attack.Type == "Counter")
+}
+```
+
+#### 18. GOAL SHOTS PER ATTACK TYPE
+##### Create table to identify goal shots per attack type, convert to percentages and identify total goal shots per game
+```{r GS_AT function}
+gs_at_f <- function(x){
+  if (nrow(x) >=1){
+# create table with Teams as rows and Attack Types as columns #
+gs_at <- table(x$Match_Team, x$Attack.Type)
+
+# transform to percentages (% GS  per Attack Type) #
+gs_at <- round(prop.table(gs_at) * 100, digits = 2)
+
+# convert to data frame #
+gs_at <- as.data.frame.matrix(gs_at)
+
+# list of goal shot attack types #
+p <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+gs_at[p[!(p %in% colnames(gs_at))]] = 0
+
+# add column with total number of goal shots by counting number of rows in Goal_Shots data frame #
+gs_at <- mutate(gs_at, GS_Total = nrow(x))
+
+gs_at <- plyr::rename(gs_at, c("Counter" = "GS_Counter", 
+                               "Established" = "GS_Established",
+                               "Set Piece" = "GS_Set_Piece"))
+
+return(gs_at)
+  } else {(gs_at <- setNames(as.data.frame(matrix(c(0, 0, 0, 0.75), ncol = 4, nrow = 1)), c("GS_Established", "GS_Counter", "GS_Set_Piece", "GS_Total")))
+  return(gs_at)}
+}
+
+# Winning #
+win_gs_at_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_at_list[[i]] <- gs_at_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_at_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_at_list[[i]] <- gs_at_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_at_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_at_list[[i]] <- gs_at_f(draw_goal_shots_list[[i]])
+}
+```
+
+##### Create table to identify goal shots per attack type
+```{r GS_ATN function}
+gs_atn_f <- function(x){
+  if (nrow(x) >=1){
+# create table with Teams as rows and Goal Shot Attack Types as columns #
+gs_atn <- table(x$Match_Team, x$Attack.Type)
+
+# convert to data frame #
+gs_atn <- as.data.frame.matrix(gs_atn)
+
+# list of goal shot attack types #
+p <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+gs_atn[p[!(p %in% colnames(gs_atn))]] = 0
+
+gs_atn <- plyr::rename(gs_atn, c("Counter" = "GSN_Counter", 
+                                 "Established" = "GSN_Established", 
+                                 "Set Piece" = "GSN_Set_Piece"))
+
+return(gs_atn)
+  } else {(gs_atn <- setNames(as.data.frame(matrix(c(0, 0, 0), ncol = 3, nrow = 1)), c("GSN_Established", "GSN_Counter", "GSN_Set_Piece")))
+  return(gs_atn)}
+}
+
+# Winning #
+win_gs_atn_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_atn_list[[i]] <- gs_atn_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_atn_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_atn_list[[i]] <- gs_atn_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_atn_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_atn_list[[i]] <- gs_atn_f(draw_goal_shots_list[[i]])
+}
+```
+
+##### Create table to identify goal shots per attack type
+```{r GS_N function}
+gs_n_f <- function(x){
+  if (nrow(x) >=1){
+# create table with Teams as rows and Goal Shot Attack Types as columns #
+gs_n <- table(x$Match_Team, x$Attack.Type)
+
+# convert to data frame #
+gs_n <- as.data.frame.matrix(gs_n)
+
+# list of goal shot attack types #
+p <- c("Established", "Counter", "Set Piece")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+gs_n[p[!(p %in% colnames(gs_n))]] = 0.75
+
+gs_n <- plyr::rename(gs_n, c("Counter" = "GST_Counter", 
+                             "Established" = "GST_Established",
+                             "Set Piece" = "GST_Set_Piece"))
+
+return(gs_n)
+  } else {(gs_n <- setNames(as.data.frame(matrix(c(0.75, 0.75, 0.75), ncol = 3, nrow = 1)), c("GST_Established", "GST_Counter", "GST_Set_Piece")))
+  return(gs_n)}
+}
+
+# Winning #
+win_gs_n_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_n_list[[i]] <- gs_n_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_n_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_n_list[[i]] <- gs_n_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_n_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_n_list[[i]] <- gs_n_f(draw_goal_shots_list[[i]])
+}
+```
+
+#### 19. GOALS PER ATTACK TYPE
+##### Create table to identify goal shot outcomes in established attacks and select goal column
+```{r GS_GE function}
+# Goal Shots Outcomes Established Attack #
+gs_ge_f <- function(x){
+if (any(grepl("Established", x$Attack.Type))){
+# extract from Goal_Shots data frame only rows referring to Established and save as separate data frame #
+gs_ge <- filter(x, Attack.Type == "Established")
+
+# create table with Teams as rows and Goal Shot Outcomes as columns #
+gs_ge <- table(gs_ge$Match_Team, gs_ge$Outcome)
+
+# convert to data frame #
+gs_ge <- as.data.frame.matrix(gs_ge)
+
+# list of goal shot outcomes #
+z <- c("Goal")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+gs_ge[z[!(z %in% colnames(gs_ge))]] = 0.75
+
+# rename all columns with prefix GSET #
+colnames(gs_ge) <- paste("GSET", colnames(gs_ge), sep = "_")
+
+# select column for analysis #
+gs_ge <- select(gs_ge, "GSET_Goal")
+
+return(gs_ge)
+} else {(gs_ge <- setNames(as.data.frame(matrix(c(0.75), ncol = 1, nrow = 1)), c("GSET_Goal")))
+  return(gs_ge)}
+}
+
+# Winning #
+win_gs_ge_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_ge_list[[i]] <- gs_ge_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_ge_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_ge_list[[i]] <- gs_ge_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_ge_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_ge_list[[i]] <- gs_ge_f(draw_goal_shots_list[[i]])
+}
+```
+
+##### Create table to identify goal shot outcomes in counter attacks and select goal column
+```{r GS_GC function}
+# Goal Shots Outcomes Counter Attack #
+gs_gc_f <- function(x){
+if (any(grepl("Counter", x$Attack.Type))){
+# extract from Goal_Shots data frame only rows referring to Counter and save as separate data frame #
+gs_gc <- filter(x, Attack.Type == "Counter")
+
+# create table with Teams as rows and Goal Shot Outcomes as columns #
+gs_gc <- table(gs_gc$Match_Team, gs_gc$Outcome)
+
+# convert to data frame #
+gs_gc <- as.data.frame.matrix(gs_gc)
+
+# list of goal shot outcomes #
+z <- c("Goal")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+gs_gc[z[!(z %in% colnames(gs_gc))]] = 0.75
+
+# rename all columns with prefix GSCT #
+colnames(gs_gc) <- paste("GSCT", colnames(gs_gc), sep = "_")
+
+# select column for analysis #
+gs_gc <- select(gs_gc, "GSCT_Goal")
+
+return(gs_gc)
+} else {(gs_gc <- setNames(as.data.frame(matrix(c(0.75), ncol = 1, nrow = 1)), c("GSCT_Goal")))
+  return(gs_gc)}
+}
+
+# Winning #
+win_gs_gc_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_gc_list[[i]] <- gs_gc_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_gc_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_gc_list[[i]] <- gs_gc_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_gc_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_gc_list[[i]] <- gs_gc_f(draw_goal_shots_list[[i]])
+}
+```
+
+##### Create table to identify goal shot outcomes in set pieces and select goal column
+```{r GS_GSP function}
+# Goal Shots Outcomes Set Piece #
+gs_gsp_f <- function(x){
+if (any(grepl("Set", x$Attack.Type))){
+# extract from Goal_Shots data frame only rows referring to Set Piece and save as separate data frame #
+gs_gsp <- filter(x, Attack.Type == "Set Piece")
+
+# create table with Teams as rows and Goal Shot Outcomes as columns #
+gs_gsp <- table(gs_gsp$Match_Team, gs_gsp$Outcome)
+
+# convert to data frame #
+gs_gsp <- as.data.frame.matrix(gs_gsp)
+
+# list of goal shot outcomes #
+z <- c("Goal")
+
+# check to see if all data frames contain all columns, if not add column=0.75 #
+gs_gsp[z[!(z %in% colnames(gs_gsp))]] = 0.75
+
+# rename all columns with prefix GSSPT #
+colnames(gs_gsp) <- paste("GSSPT", colnames(gs_gsp), sep = "_")
+
+# select column for analysis #
+gs_gsp <- select(gs_gsp, "GSSPT_Goal")
+
+return(gs_gsp)
+} else {(gs_gsp <- setNames(as.data.frame(matrix(c(0.75), ncol = 1, nrow = 1)), c("GSSPT_Goal")))
+  return(gs_gsp)}
+}
+
+# Winning #
+win_gs_gsp_list <- list()
+for (i in seq_along(win_goal_shots_list)){
+  win_gs_gsp_list[[i]]<- gs_gsp_f(win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_gs_gsp_list <- list()
+for (i in seq_along(lose_goal_shots_list)){
+  lose_gs_gsp_list[[i]]<- gs_gsp_f(lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_gs_gsp_list <- list()
+for (i in seq_along(draw_goal_shots_list)){
+  draw_gs_gsp_list[[i]]<- gs_gsp_f(draw_goal_shots_list[[i]])
+}
+```
+
+##### Join all teams goals per attack type data frames into one
+```{r GS_G function}
+# Goal Total #
+
+# Winning #
+win_gs_g_list <- list()
+for (i in 1:length(gc_win_list)){
+  win_gs_g_list[[i]] <- bind_cols(win_gs_ge_list[[i]], win_gs_gc_list[[i]], win_gs_gsp_list[[i]])
+}
+
+# Losing #
+lose_gs_g_list <- list()
+for (i in 1:length(gc_lose_list)){
+  lose_gs_g_list[[i]] <- bind_cols(lose_gs_ge_list[[i]], lose_gs_gc_list[[i]], lose_gs_gsp_list[[i]])
+}
+
+# Drawing #
+draw_gs_g_list <- list()
+for (i in 1:length(gc_draw_list)){
+  draw_gs_g_list[[i]] <- bind_cols(draw_gs_ge_list[[i]], draw_gs_gc_list[[i]], draw_gs_gsp_list[[i]])
+}
+```
+
+### TIME
+#### 20. TOTAL TIME IN POSSESSION PER ATTACK TYPE
+##### Create total time in possession data frame by joining game action and goal shot data frames
+```{r GA_Time function}
+# create time list (total game actions) from game actions and goal shots #
+
+# Winning #
+win_ga_time_list <- list()
+for (i in seq_along(gc_win_list)){
+ win_ga_time_list[[i]] <- bind_rows(win_game_actions_list[[i]], win_goal_shots_list[[i]])
+}
+
+# Losing #
+lose_ga_time_list <- list()
+for (i in seq_along(gc_lose_list)){
+ lose_ga_time_list[[i]] <- bind_rows(lose_game_actions_list[[i]], lose_goal_shots_list[[i]])
+}
+
+# Drawing #
+draw_ga_time_list <- list()
+for (i in seq_along(gc_draw_list)){
+ draw_ga_time_list[[i]] <- bind_rows(draw_game_actions_list[[i]], draw_goal_shots_list[[i]])
+}
+```
+
+##### Create time in possession in established attacks data frame by joining game action and goal shot in established attacks data frames
+```{r GA_GS_E function}
+# total game actions per established #
+
+# Winning #
+win_ga_gs_e_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_ga_gs_e_list[[i]] <- bind_rows(win_game_actions_e_list[[i]], win_goal_shots_e_list[[i]])
+}
+
+# Losing #
+lose_ga_gs_e_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_ga_gs_e_list[[i]] <- bind_rows(lose_game_actions_e_list[[i]], lose_goal_shots_e_list[[i]])
+}
+
+# Drawing #
+draw_ga_gs_e_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_ga_gs_e_list[[i]] <- bind_rows(draw_game_actions_e_list[[i]], draw_goal_shots_e_list[[i]])
+}
+```
+
+##### Create time in possession in counter attacks data frame by joining game action and goal shot in counter attacks data frames
+```{r GA_GS_C function}
+# total game actions per counter #
+
+# Winning #
+win_ga_gs_c_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_ga_gs_c_list[[i]] <- bind_rows(win_game_actions_c_list[[i]], win_goal_shots_c_list[[i]])
+}
+
+# Losing #
+lose_ga_gs_c_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_ga_gs_c_list[[i]] <- bind_rows(lose_game_actions_c_list[[i]], lose_goal_shots_c_list[[i]])
+}
+
+# Drawing #
+draw_ga_gs_c_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_ga_gs_c_list[[i]] <- bind_rows(draw_game_actions_c_list[[i]], draw_goal_shots_c_list[[i]])
+}
+```
+
+#### 21. TIME PER ATTACK TYPE PER LOCATION
+##### Create table to identify time in possession per location in established attacks and convert to percentages
+```{r GA_Time_E function}
+# Total Time in each location in Established Attack #
+ga_time_e_f <- function(x){
+   if (any(grepl("Established", x$Attack.Type))){
+# extract from GA_Time data frame only rows referring to Established and save as separate data frame#
+ga_time_e <- filter(x, Attack.Type == "Established")
+
+# create table with Teams as rows and Location as columns #
+ga_time_e <- table(ga_time_e$Match_Team, ga_time_e$Location)
+
+# transform to percentages (% game actions used in each area per Established) #
+ga_time_e <- round((prop.table(ga_time_e) * 100), digits = 2)
+
+# convert to data frame #
+ga_time_e <- as.data.frame.matrix(ga_time_e)
+
+# list of locations #
+t <- c("AC Att", "A25 Att", "A50 Att", "D50 Att", "D25 Att")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_time_e[t[!(t %in% colnames(ga_time_e))]] = 0
+
+# rename columns #
+ga_time_e <- plyr::rename(ga_time_e, c("AC Att" = "AC_Time_E", 
+                                       "A25 Att" = "A25_Time_E",
+                                       "A50 Att" = "A50_Time_E", 
+                                       "D50 Att" = "D50_Time_E", 
+                                       "D25 Att" = "D25_Time_E"))
+
+return(ga_time_e)
+   } else {(ga_time_e <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("AC_Time_E", "A25_Time_E", "A50_Time_E", "D50_Time_E", "D25_Time_E")))
+  return(ga_time_e)}
+}
+
+# Winning #
+win_ga_time_e_list <- list()
+for (i in seq_along(win_ga_time_list)){
+  win_ga_time_e_list[[i]] <- ga_time_e_f(win_ga_time_list[[i]])
+}
+
+# Losing #
+lose_ga_time_e_list <- list()
+for (i in seq_along(lose_ga_time_list)){
+  lose_ga_time_e_list[[i]] <- ga_time_e_f(lose_ga_time_list[[i]])
+}
+
+# Drawing #
+draw_ga_time_e_list <- list()
+for (i in seq_along(draw_ga_time_list)){
+  draw_ga_time_e_list[[i]] <- ga_time_e_f(draw_ga_time_list[[i]])
+}
+```
+
+##### Create table to identify time in possession per location in counter attacks and convert to percentages
+```{r GA_Time_C function}
+# Total Time in each location in Counter Attack #
+ga_time_c_f <- function(x){
+  if (any(grepl("Counter", x$Attack.Type))){
+# extract from GA_Time data frame only rows referring to Counter and save as separate data frame#
+ga_time_c <- filter(x, Attack.Type == "Counter")
+
+# create table with Teams as rows and Location as columns #
+ga_time_c <- table(ga_time_c$Match_Team, ga_time_c$Location)
+
+# transform to percentages (% game actions used in each area per Counter) #
+ga_time_c <- round((prop.table(ga_time_c) * 100), digits = 2)
+
+# convert to data frame #
+ga_time_c <- as.data.frame.matrix(ga_time_c)
+
+# list of locations #
+t <- c("AC Att", "A25 Att", "A50 Att", "D50 Att", "D25 Att")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+ga_time_c[t[!(t %in% colnames(ga_time_c))]] = 0
+
+# rename columns #
+ga_time_c <- plyr::rename(ga_time_c, c("AC Att" = "AC_Time_C", 
+                                       "A25 Att" = "A25_Time_C",
+                                       "A50 Att" = "A50_Time_C", 
+                                       "D50 Att" = "D50_Time_C", 
+                                       "D25 Att" = "D25_Time_C"))
+
+return(ga_time_c)
+  } else {(ga_time_c <- setNames(as.data.frame(matrix(c(0, 0, 0, 0, 0), ncol = 5, nrow = 1)), c("AC_Time_C", "A25_Time_C", "A50_Time_C", "D50_Time_C", "D25_Time_C")))
+  return(ga_time_c)}
+}
+
+# Winning #
+win_ga_time_c_list <- list()
+for (i in seq_along(win_ga_time_list)){
+  win_ga_time_c_list[[i]] <- ga_time_c_f(win_ga_time_list[[i]])
+}
+
+# Losing #
+lose_ga_time_c_list <- list()
+for (i in seq_along(lose_ga_time_list)){
+  lose_ga_time_c_list[[i]] <- ga_time_c_f(lose_ga_time_list[[i]])
+}
+
+# Drawing #
+draw_ga_time_c_list <- list()
+for (i in seq_along(draw_ga_time_list)){
+  draw_ga_time_c_list[[i]] <- ga_time_c_f(draw_ga_time_list[[i]])
+}
+```
+
+#### 22. TOTAL GAME ACTIONS PER ATTACK TYPE
+##### Count total number of game actions per game
+```{r GA_Total function}
+# count total number of game actions per game by counting rows in time data frame #
+ga_total_f <- function(x){
+  ga_total <- summarise(x, GA_Total = nrow(x))
+  return(ga_total)
+}
+
+# Winning #
+win_ga_total_list <- list()
+for (i in seq_along(win_ga_time_list)){
+  win_ga_total_list[[i]] <- ga_total_f(win_ga_time_list[[i]])
+}
+
+# Losing #
+lose_ga_total_list <- list()
+for (i in seq_along(lose_ga_time_list)){
+  lose_ga_total_list[[i]] <- ga_total_f(lose_ga_time_list[[i]])
+}
+
+# Drawing #
+draw_ga_total_list <- list()
+for (i in seq_along(draw_ga_time_list)){
+  draw_ga_total_list[[i]] <- ga_total_f(draw_ga_time_list[[i]])
+}
+```
+
+##### Count total number of game actions in established attacks 
+```{r GAE_Total function}
+# count number of game actions per established attacks per game by counting rows in time established data frame #
+gae_total_f <- function(x){
+  gae_total <- summarise(x, GAE_Total = nrow(x))
+  return(gae_total)
+}
+
+# Winning #
+win_gae_total_list <- list()
+for (i in seq_along(win_ga_gs_e_list)){
+  win_gae_total_list[[i]] <- gae_total_f(win_ga_gs_e_list[[i]])
+}
+
+# Losing #
+lose_gae_total_list <- list()
+for (i in seq_along(lose_ga_gs_e_list)){
+  lose_gae_total_list[[i]] <- gae_total_f(lose_ga_gs_e_list[[i]])
+}
+
+# Drawing #
+draw_gae_total_list <- list()
+for (i in seq_along(draw_ga_gs_e_list)){
+  draw_gae_total_list[[i]] <- gae_total_f(draw_ga_gs_e_list[[i]])
+}
+```
+
+##### Count total number of game actions in counter attacks
+```{r GAC_Total function}
+# count number of game actions per counter attacks per game by counting rows in time counter data frame #
+gac_total_f <- function(x){
+  gac_total <- summarise(x, GAC_Total = nrow(x))
+  return(gac_total)
+}
+
+# Winning #
+win_gac_total_list <- list()
+for (i in seq_along(win_ga_gs_c_list)){
+  win_gac_total_list[[i]] <- gac_total_f(win_ga_gs_c_list[[i]])
+}
+
+# Losing #
+lose_gac_total_list <- list()
+for (i in seq_along(lose_ga_gs_c_list)){
+  lose_gac_total_list[[i]] <- gac_total_f(lose_ga_gs_c_list[[i]])
+}
+
+# Drawing #
+draw_gac_total_list <- list()
+for (i in seq_along(draw_ga_gs_c_list)){
+  draw_gac_total_list[[i]] <- gac_total_f(draw_ga_gs_c_list[[i]])
+}
+```
+
+##### Join time in possessions per game and attack type data frames into one
+```{r GA_Time_Total function}
+# join time data frames into one #
+
+# Winning #
+win_ga_time_total_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_ga_time_total_list[[i]] <- bind_cols(win_ga_time_e_list[[i]], win_ga_time_c_list[[i]], win_ga_total_list[[i]])
+}
+
+# Losing #
+lose_ga_time_total_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_ga_time_total_list[[i]] <- bind_cols(lose_ga_time_e_list[[i]], lose_ga_time_c_list[[i]], lose_ga_total_list[[i]])
+}
+
+# Drawing #
+draw_ga_time_total_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_ga_time_total_list[[i]] <- bind_cols(draw_ga_time_e_list[[i]], draw_ga_time_c_list[[i]], draw_ga_total_list[[i]])
+}
+```
+
+#### 23. ATTACK TYPES PER GAME
+##### Count number of established attacks per game
+```{r Established function}
+# Established #
+established_f <- function(x){
+  if (any(grepl("Established", x$A))){
+# extract from all data (Game) rows referring to Established Attacks and save as separate data frame #
+established <- filter(x, A == "Established")
+
+# add column with total number of attacks by counting number of rows in Established data frame #
+established <- summarise(established, E_Total = nrow(established))
+
+return(established)
+  } else {(established <- setNames(as.data.frame(matrix(c(0), ncol = 1, nrow = 1)), c("E_Total")))
+  return(established)}
+}
+
+# Winning #
+win_established_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_established_list[[i]] <- established_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_established_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_established_list[[i]] <- established_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_established_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_established_list[[i]] <- established_f(gc_draw_list[[i]])
+}
+```
+
+##### Count number of counter attacks per game
+```{r Counter function}
+# Counter #
+counter_f <- function(x){
+  if (any(grepl("Counter", x$A))){
+# extract from all data (Game) rows referring to Counter Attacks and save as separate data frame #
+counter<-filter(x, A == "Counter")
+
+# add column with total number of attacks by counting number of rows in Counter data frame #
+counter <- summarise(counter, C_Total = nrow(counter))
+
+return(counter)
+  } else {(counter <- setNames(as.data.frame(matrix(c(0), ncol = 1, nrow = 1)), c("C_Total")))
+  return(counter)}
+}
+
+# Winning #
+win_counter_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_counter_list[[i]] <- counter_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_counter_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_counter_list[[i]] <- counter_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_counter_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_counter_list[[i]] <- counter_f(gc_draw_list[[i]])
+}
+```
+
+##### Count number of set pieces per game
+```{r Set_Piece function}
+# Set Piece #
+set_piece_f <- function(x){
+if (any(grepl("Set", x$B))){
+# extract from all data (Game) rows referring to Set Pieces and save as separate data frame #
+set_piece <- filter(x, B == "Set")
+
+# add column with total number of attacks by counting number of rows in Set Pieces data frame #
+set_piece <- summarise(set_piece, SP_Total = nrow(set_piece))
+
+return(set_piece)
+} else {(set_piece <- setNames(as.data.frame(matrix(0, ncol = 1, nrow = 1)), c("SP_Total")))
+  return(set_piece)}
+}
+
+# Winning #
+win_set_piece_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_set_piece_list[[i]] <- set_piece_f(gc_win_list[[i]])
+}
+
+# Losing #
+lose_set_piece_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_set_piece_list[[i]] <- set_piece_f(gc_lose_list[[i]])
+}
+
+# Drawing #
+draw_set_piece_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_set_piece_list[[i]] <- set_piece_f(gc_draw_list[[i]])
+}
+```
+
+##### Join all teams attack types data frames
+```{r Attack_type function}
+# Attack Type Totals per game per team #
+
+# Winning #
+win_attack_type_list <- list()
+for (i in seq_along(gc_win_list)){
+  win_attack_type_list[[i]] <- bind_cols(win_established_list[[i]], win_counter_list[[i]], win_set_piece_list[[i]])
+}
+
+# Losing #
+lose_attack_type_list <- list()
+for (i in seq_along(gc_lose_list)){
+  lose_attack_type_list[[i]] <- bind_cols(lose_established_list[[i]], lose_counter_list[[i]], lose_set_piece_list[[i]])
+}
+
+# Drawing #
+draw_attack_type_list <- list()
+for (i in seq_along(gc_draw_list)){
+  draw_attack_type_list[[i]] <- bind_cols(draw_established_list[[i]], draw_counter_list[[i]], draw_set_piece_list[[i]])
+}
+```
+
+#### 24. JOIN AND TIDY ALL VARIABLES FOR ANALYSIS
+##### Join game actions, stoppages, turnovers, goal shots, time and attacks into one data frame
+```{r All function}
+# join all variables into one data frame for analysis #
+
+# Winning #
+win_all_list <- list()
+for (i in seq_along(gc_win_list)){
+win_all_list[[i]] <- bind_cols(win_game_details_list[[i]], win_ga_type_list[[i]], win_ga_time_total_list[[i]], win_gae_total_list[[i]], win_gac_total_list[[i]], win_me_list[[i]], win_s_at_list[[i]], win_s_loc_list[[i]], win_rs_list[[i]], win_t_at_list[[i]], win_t_type_list[[i]], win_tp_list[[i]], win_tl_list[[i]], win_gs_at_list[[i]], win_gs_n_list[[i]], win_gs_g_list[[i]], win_attack_type_list[[i]], win_gs_atn_list[[i]], win_t_atn_list[[i]], win_sp_atn_list[[i]])
+}
+
+# Losing #
+lose_all_list <- list()
+for (i in seq_along(gc_lose_list)){
+lose_all_list[[i]] <- bind_cols(lose_game_details_list[[i]], lose_ga_type_list[[i]], lose_ga_time_total_list[[i]], lose_gae_total_list[[i]], lose_gac_total_list[[i]], lose_me_list[[i]], lose_s_at_list[[i]], lose_s_loc_list[[i]], lose_rs_list[[i]], lose_t_at_list[[i]], lose_t_type_list[[i]], lose_tp_list[[i]], lose_tl_list[[i]], lose_gs_at_list[[i]], lose_gs_n_list[[i]], lose_gs_g_list[[i]], lose_attack_type_list[[i]], lose_gs_atn_list[[i]], lose_t_atn_list[[i]], lose_sp_atn_list[[i]])
+}
+
+# Drawing #
+draw_all_list <- list()
+for (i in seq_along(gc_draw_list)){
+draw_all_list[[i]] <- bind_cols(draw_game_details_list[[i]], draw_ga_type_list[[i]], draw_ga_time_total_list[[i]], draw_gae_total_list[[i]], draw_gac_total_list[[i]], draw_me_list[[i]], draw_s_at_list[[i]], draw_s_loc_list[[i]], draw_rs_list[[i]], draw_t_at_list[[i]], draw_t_type_list[[i]], draw_tp_list[[i]], draw_tl_list[[i]], draw_gs_at_list[[i]], draw_gs_n_list[[i]], draw_gs_g_list[[i]], draw_attack_type_list[[i]], draw_gs_atn_list[[i]], draw_t_atn_list[[i]], draw_sp_atn_list[[i]])
+}
+```
+
+##### Normalise data by dividing by total attacks or percentage of game time
+```{r win all function}
+win_all_f <- function(x){
+# create new columns normalising for attacks #
+   win_all <- mutate(x, GA_E = (GAE_Total/E_Total), 
+                        GA_C = (GAC_Total/C_Total), 
+                        GA_GS = (GA_Total/GS_Total), 
+                        GA_T = (GA_Total/T_Total), 
+                        GA_S = (GA_Total/S_Total), 
+                        E_GS = (E_Total/GST_Established), 
+                        E_Goal = (E_Total/GSET_Goal), 
+                        C_GS = (C_Total/GST_Counter), 
+                        C_Goal = (C_Total/GSCT_Goal), 
+                        SP_Goal = (SP_Total/GSSPT_Goal), 
+                        E_GSN = (GSN_Established/E_Total)*100, 
+                        E_TN = (TN_Established/E_Total)*100,
+                        E_SPN = (SPN_Established/E_Total)*100, 
+                        C_GSN = (GSN_Counter/C_Total)*100, 
+                        C_TN = (TN_Counter/C_Total)*100, 
+                        C_SPN = (SPN_Counter/C_Total)*100, 
+                        C_EN = (100-(C_GSN + C_TN + C_SPN)))
+ 
+   # create new columns normalising for game time #
+   win_all <- mutate(win_all, Penetrating = (Penetrating/Winning), 
+                              GA_Total = (GA_Total/Winning), 
+                              S_Total = (S_Total/Winning), 
+                              T_Total = (T_Total/Winning), 
+                              GS_Total = (GS_Total/Winning), 
+                              E_Total = (E_Total/Winning), 
+                              C_Total = (C_Total/Winning), 
+                              SP_Total = (SP_Total/Winning))
+
+}
+
+
+win_hockey_list <- list()
+for (i in seq_along(win_all_list)){
+  win_hockey_list[[i]] <- win_all_f(win_all_list[[i]])
+}
+```
+
+##### Bind all teams together into one data frame
+```{r win variables}
+# bind all matches together into one data frame #
+Winning <- bind_rows(win_hockey_list) 
+
+```
+
+##### Normalise data by dividing by total attacks or percentage of game time
+```{r lose all function}
+lose_all_f <- function(x){
+  # create new columns normalising for attacks #
+   lose_all <- mutate(x, GA_E = (GAE_Total/E_Total), 
+                         GA_C = (GAC_Total/C_Total), 
+                         GA_GS = (GA_Total/GS_Total), 
+                         GA_T = (GA_Total/T_Total), 
+                         GA_S = (GA_Total/S_Total), 
+                         E_GS = (E_Total/GST_Established), 
+                         E_Goal = (E_Total/GSET_Goal), 
+                         C_GS = (C_Total/GST_Counter), 
+                         C_Goal = (C_Total/GSCT_Goal), 
+                         SP_Goal = (SP_Total/GSSPT_Goal), 
+                         E_GSN = (GSN_Established/E_Total)*100, 
+                         E_TN = (TN_Established/E_Total)*100,
+                         E_SPN = (SPN_Established/E_Total)*100, 
+                         C_GSN = (GSN_Counter/C_Total)*100, 
+                         C_TN = (TN_Counter/C_Total)*100, 
+                         C_SPN = (SPN_Counter/C_Total)*100, 
+                         C_EN = (100-(C_GSN + C_TN + C_SPN)))
+ 
+   # create new columns normalising for game time #
+   lose_all <- mutate(lose_all, Penetrating = (Penetrating/Losing), 
+                                GA_Total = (GA_Total/Losing), 
+                                S_Total = (S_Total/Losing), 
+                                T_Total = (T_Total/Losing), 
+                                GS_Total = (GS_Total/Losing), 
+                                E_Total = (E_Total/Losing), 
+                                C_Total =  (C_Total/Losing), 
+                                SP_Total = (SP_Total/Losing))
+
+}
+
+
+lose_hockey_list <- list()
+for (i in seq_along(lose_all_list)){
+  lose_hockey_list[[i]] <- lose_all_f(lose_all_list[[i]])
+}
+```
+
+##### Bind all teams together into one data frame
+```{r lose variables}
+# bind all matches together into one data frame #
+Losing <- bind_rows(lose_hockey_list) 
+
+```
+
+##### Normalise data by dividing by total attacks or percentage of game time
+```{r draw all function}
+draw_all_f <- function(x){
+  # create new columns normalising for attacks #
+   draw_all <- mutate(x, GA_E = (GAE_Total/E_Total), 
+                         GA_C = (GAC_Total/C_Total), 
+                         GA_GS = (GA_Total/GS_Total), 
+                         GA_T = (GA_Total/T_Total), 
+                         GA_S = (GA_Total/S_Total), 
+                         E_GS = (E_Total/GST_Established), 
+                         E_Goal = (E_Total/GSET_Goal), 
+                         C_GS = (C_Total/GST_Counter), 
+                         C_Goal = (C_Total/GSCT_Goal), 
+                         SP_Goal = (SP_Total/GSSPT_Goal), 
+                         E_GSN = (GSN_Established/E_Total)*100, 
+                         E_TN = (TN_Established/E_Total)*100,
+                         E_SPN = (SPN_Established/E_Total)*100, 
+                         C_GSN = (GSN_Counter/C_Total)*100, 
+                         C_TN = (TN_Counter/C_Total)*100, 
+                         C_SPN = (SPN_Counter/C_Total)*100, 
+                         C_EN = (100-(C_GSN + C_TN + C_SPN)))
+ 
+   # create new columns normalising for game time #
+   draw_all <- mutate(draw_all, Penetrating = (Penetrating/Drawing), 
+                                GA_Total = (GA_Total/Drawing), 
+                                S_Total = (S_Total/Drawing), 
+                                T_Total = (T_Total/Drawing), 
+                                GS_Total = (GS_Total/Drawing), 
+                                E_Total = (E_Total/Drawing), 
+                                C_Total = (C_Total/Drawing), 
+                                SP_Total = (SP_Total/Drawing))
+
+}
+
+
+draw_hockey_list <- list()
+for (i in seq_along(draw_all_list)){
+  draw_hockey_list[[i]] <- draw_all_f(draw_all_list[[i]])
+}
+```
+
+##### Bind all teams together into one data frame
+```{r draw variables}
+# bind all matches together into one data frame #
+Drawing <- bind_rows(draw_hockey_list) 
+
+```
+
+### CREATE GAME STYLES
+#### 25. JOIN, SELECT VARIABLES FOR ANALYSIS AND SPLIT INTO MOMENTS OF PLAY CATEGORIES
+##### Bind match status data frames into one
+```{r get data}
+
+# bind match status data frames #
+variables <- bind_rows(Winning, Losing, Drawing)
+
+variables2 <- head(variables)
+knitr::kable(variables2[, 1:6], caption = "Tidied Data")
+```
+
+##### Remove unused variables
+```{r drop}
+# list of variables to drop #
+drop <- c( "GST_Established", "GST_Set_Piece", "GST_Counter", "GSET_Goal", "GSSPT_Goal", "GSCT_Goal", "A25E_Overhead", "A50E_Overhead", "A25E_Through Ball", "D25E_Through Ball", "A50E_Cross", "A50E_Through Ball", "D50E_Through Ball", "D25E_Clearance", "A25C_Overhead", "A50C_Overhead", "A25C_Through Ball", "D25C_Through Ball", "A50C_Cross", "D50C_Through Ball", "D50C_Overhead", "D25C_Overhead", "Winning", "Losing", "Drawing",  "ACE_Main_Gain", "A50E_Main_Gain", "D50E_Main_Gain", "D25E_Main_Gain", "ACE_Retain_Turnover", "ACC_Main_Gain", "A25C_Main_Gain", "A50C_Main_Gain", "D50C_Main_Gain", "ACC_Retain_Turnover", "A25C_Retain_Turnover", "D50C_Retain_Turnover", "GAE_Total", "GAC_Total", "GSN_Counter", "GSN_Established", "GSN_Set_Piece", "TN_Counter", "TN_Established", "TN_Set_Piece", "SPN_Established", "SPN_Counter", "SPN_Set_Piece")
+
+# remove variables for analysis #
+variables_mop <- variables [, !(colnames(variables) %in% drop)]
+
+# avg #
+avg <- variables_mop %>%
+  summarise(across(8:121, mean))
+
+```
+
+##### Split into game style categories
+```{r filter mop}
+# convert from wide to long format #
+variables_mop_long <- variables_mop %>% 
+  pivot_longer(cols = where(is.numeric),
+               names_to = "variable",
+               values_to = "Value")
+
+# allocate variables to moment of play #
+tempo <- c("GA_GS", "GA_T", "GA_S",   "GA_E", "GA_C", "E_Total", "C_Total", "GA_Total", "Penetrating" )
+
+e <- c("A25E_Main_Gain", "A25E_Retain_Turnover",  "A50E_Retain_Turnover", "D50E_Retain_Turnover",  "D25E_Retain_Turnover",  "S_A25E", "S_A50E", "S_ACE", "S_D50E", "S_D25E","A25E_S_F", "A50E_S_F", "D50E_S_F", "D25E_S_F", "TE_Stoppages", "TE_Play", "TE_High", "TE_Medium", "TE_Low",  "TE_A25", "TE_A50", "TE_AC", "TE_D25", "TE_D50",   "E_GS", "E_Goal", "A25_Time_E", "A50_Time_E", "AC_Time_E", "D25_Time_E", "D50_Time_E", "E_GSN",  "E_TN", "E_SPN")
+
+c <- c("A50C_Retain_Turnover",  "D25C_Main_Gain", "D25C_Retain_Turnover",  "S_A25C", "S_A50C", "S_ACC", "S_D50C", "S_D25C",  "TC_Stoppages", "TC_Play", "TC_High", "TC_Medium", "TC_Low", "TC_A25", "TC_A50", "TC_AC", "TC_D25", "TC_D50", "C_GS", "C_Goal",  "A25_Time_C", "A50_Time_C", "AC_Time_C", "D25_Time_C", "D50_Time_C", "C_GSN", "C_TN", "C_SPN", "C_EN")
+  
+sp <- c("SP_Goal", "SP_Total")
+
+gae <- c("ACE_Dribble", "ACE_Pass", "ACE_Cross", "A25E_Cross", "A25E_Dribble", "A25E_Pass",  "A50E_Cross", "A50E_Dribble", "A50E_Pass", "D50E_Dribble", "D50E_Pass", "D50E_Overhead",  "D25E_Dribble", "D25E_Pass", "D25E_Overhead")
+
+gac <- c("ACC_Dribble", "ACC_Pass", "ACC_Cross", "A25C_Cross", "A25C_Dribble", "A25C_Pass",  "A50C_Cross", "A50C_Dribble", "A50C_Pass",  "A50C_Through Ball", "D50C_Dribble", "D50C_Pass",  "D25C_Clearance", "D25C_Dribble", "D25C_Pass")
+
+# add new column identifying moment of play #
+variables_mop_long <- variables_mop_long %>%
+  mutate(
+    moment_of_play = case_when(
+      variable %in% e ~ "E",
+      variable %in% c ~ "C",
+      variable %in% sp ~ "SP",
+      variable %in% tempo ~ "Tempo",
+      variable %in% gae ~ "GAE",
+      variable %in% gac ~"GAC"
+    )
+  )
+
+# split into moment of play #
+established <- filter(variables_mop_long, moment_of_play == "E")
+counter <- filter(variables_mop_long, moment_of_play == "C")
+set_piece <- filter(variables_mop_long, moment_of_play == "SP")
+tempo <- filter(variables_mop_long, moment_of_play == "Tempo")
+gae <- filter(variables_mop_long, moment_of_play == "GAE")
+gac <- filter(variables_mop_long, moment_of_play == "GAC")
+
+# transform long to wide #
+established <- established %>% 
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+counter <- counter %>% 
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+set_piece <- set_piece %>% 
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+tempo <- tempo %>%
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+gae <- gae %>%
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+gac <- gac %>%
+  pivot_wider(names_from = "variable", values_from = "Value")
+
+```
+
+#### 26. PERFORM KMEANS CLUSTER ANALYSIS PER GAME STYLE CATEGORY
+##### Standardise variables for kmeans test and add result to established attacks variables
+```{r k e}
+# established #
+# calculate z scores for all numeric variables #
+established_z <- established %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+e_k <- kmeans(established_z[, 9:42], 2, nstart = 25, iter.max = 20)
+
+e_cluster <- as.data.frame(e_k$cluster) %>% rename("E_Cluster" = "e_k$cluster")
+
+# add cluster to game variables #
+established_cluster <- bind_cols(established, e_cluster)
+established_z_cluster <- bind_cols(established_z, e_cluster)
+
+```
+
+##### Standardise variables for kmeans test and add result to counter attacks variables
+```{r k c}
+# counter #
+# calculate z scores for all numeric variables #
+counter_z <- counter %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+c_k <- kmeans(counter_z[, 9:37], 2, nstart = 25, iter.max = 20)
+c_cluster <- as.data.frame(c_k$cluster) %>% rename("C_Cluster" = "c_k$cluster")
+
+# add cluster to game variables #
+counter_cluster <- bind_cols(counter, c_cluster)
+counter_z_cluster <- bind_cols(counter_z, c_cluster)
+
+```
+
+##### Standardise variables for kmeans test and add result to set pieces variables
+```{r k sp}
+# set pieces #
+# calculate z scores for all numeric variables #
+set_piece_z <- set_piece %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+sp_k <- kmeans(set_piece_z[, 9:10], 2, nstart = 25, iter.max = 20)
+sp_cluster <- as.data.frame(sp_k$cluster) %>% rename("SP_Cluster" = "sp_k$cluster")
+
+# add cluster to game variables #
+set_piece_cluster <- bind_cols(set_piece, sp_cluster)
+set_piece_z_cluster <- bind_cols(set_piece_z, sp_cluster)
+
+```
+
+##### Standardise variables for kmeans test and add result to tempo variables
+```{r k tempo}
+# tempo #
+# calculate z scores for all numeric variables #
+tempo_z <- tempo %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+tempo_k <- kmeans(tempo_z[, 9:17], 2, nstart = 25, iter.max = 20)
+tempo_cluster <- as.data.frame(tempo_k$cluster) %>% rename("Tempo_Cluster" = "tempo_k$cluster")
+
+# add cluster to game variables #
+Tempo_cluster <- bind_cols(tempo, tempo_cluster)
+Tempo_z_cluster <- bind_cols(tempo_z, tempo_cluster)
+
+```
+
+##### Standardise variables for kmeans test and add result to established attack game actions variables
+```{r k gae}
+# game actions established #
+# calculate z scores for all numeric variables #
+gae_z <- gae %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+gae_k <- kmeans(gae_z[, 9:22], 2, nstart = 25, iter.max = 20)
+gae_cluster <- as.data.frame(gae_k$cluster) %>% rename("GAE_Cluster" = "gae_k$cluster")
+
+# add cluster to game variables #
+GAE_cluster <- bind_cols(gae, gae_cluster)
+GAE_z_cluster <- bind_cols(gae_z, gae_cluster)
+
+```
+
+##### Standardise variables for kmeans test and add result to counter attack game actions variables
+```{r k gac}
+# game actions counter #
+# calculate z scores for all numeric variables #
+gac_z <- gac %>% mutate(across(where(is.numeric),scale))
+
+set.seed(1234)
+
+# kmeans test #
+gac_k <- kmeans(gac_z[, 9:22], 2, nstart = 25, iter.max = 20)
+gac_cluster <- as.data.frame(gac_k$cluster) %>% rename("GAC_Cluster" = "gac_k$cluster")
+
+# add cluster to game variables #
+GAC_cluster <- bind_cols(gac, gac_cluster)
+GAC_z_cluster <- bind_cols(gac_z, gac_cluster)
+
+```
+
+##### Join all teams game style categories into one
+```{r join mop}
+# join game style categories clusters into one #
+mop_c <- bind_cols(established_cluster[, 1:7], gae_cluster, e_cluster, gac_cluster, c_cluster, sp_cluster, tempo_cluster)
+
+mop_c2 <- head(mop_c)
+knitr::kable(mop_c2[, c(1, 8:13)], caption = "Game Style Clusters")
+```
+
+#### 27. IDENTIFY GAME STYLE TYPES
+##### Calculate averages per game variables per k means cluster to identify game style types
+```{r k mop summary}
+
+# established avg #
+established_sum <- established_cluster %>%
+  group_by(E_Cluster) %>%
+  summarise(across(9:42, mean))
+
+established_z_sum <- established_z_cluster %>%
+  group_by(E_Cluster) %>%
+  summarise(across(9:42, mean))
+
+# counter avg #
+counter_sum <- counter_cluster %>%
+  group_by(C_Cluster) %>%
+  summarise(across(9:37, mean))
+
+counter_z_sum <- counter_z_cluster %>%
+  group_by(C_Cluster) %>%
+  summarise(across(9:37, mean))
+
+# set piece avg # 
+set_piece_sum <- set_piece_cluster %>%
+  group_by(SP_Cluster) %>%
+  summarise(across(9:10, mean))
+
+set_piece_z_sum <- set_piece_z_cluster %>%
+  group_by(SP_Cluster) %>%
+  summarise(across(9:10, mean))
+
+# tempo avg #
+tempo_sum <- Tempo_cluster %>%
+  group_by(Tempo_Cluster) %>%
+  summarise(across(9:17, mean))
+
+tempo_z_sum <- Tempo_z_cluster %>%
+  group_by(Tempo_Cluster) %>%
+  summarise(across(9:17, mean))
+
+# gae avg #
+GAE_sum <- GAE_cluster %>%
+  group_by(GAE_Cluster) %>%
+  summarise(across(9:22, mean))
+
+GAE_z_sum <- GAE_z_cluster %>%
+  group_by(GAE_Cluster) %>%
+  summarise(across(9:22, mean))
+
+# gac avg #
+GAC_sum <- GAC_cluster %>%
+  group_by(GAC_Cluster) %>%
+  summarise(across(9:22, mean))
+
+GAC_z_sum <- GAC_z_cluster %>%
+  group_by(GAC_Cluster) %>%
+  summarise(across(9:22, mean))
+```
+
+#### 28. EXPORT LEAGUE CLUSTER AVERAGES DATA
+##### Transform and tidy tempo data frame for presentation
+```{r t compare}
+# tempo #
+# transform from wide to long #
+tempo_z_sum_long <- tempo_z_sum %>%
+  pivot_longer(cols = GA_Total:GA_S,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+tempo_z_sum_long$Tempo_Cluster <- as.factor(tempo_z_sum_long$Tempo_Cluster)
+tempo_z_sum_long$Tempo_Cluster <- revalue(tempo_z_sum_long$Tempo_Cluster, c("1" = "Direct", "2" = "Possession"))
+
+# add game style category #
+tempo_z_sum_long$Category <- "T"
+
+```
+
+##### Transform and tidy established attack game actions data frame for presentation
+```{r gae compare}
+# game actions established #
+# transform from wide to long #
+gae_z_sum_long <- GAE_z_sum %>%
+  pivot_longer(cols = ACE_Cross:D25E_Pass,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+gae_z_sum_long$GAE_Cluster <- as.factor(gae_z_sum_long$GAE_Cluster)
+gae_z_sum_long$GAE_Cluster <- revalue(gae_z_sum_long$GAE_Cluster, c("1" = "Pass", "2" = "Dribble"))
+
+# add game style category #
+gae_z_sum_long$Category <- "GAE"
+
+```
+
+##### Transform and tidy established attack data frame for presentation
+```{r e compare}
+# established #
+# transform from wide to long #
+e_z_sum_long <- established_z_sum %>%
+  pivot_longer(cols = A25_Time_E:E_SPN,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+e_z_sum_long$E_Cluster <- as.factor(e_z_sum_long$E_Cluster)
+e_z_sum_long$E_Cluster <- revalue(e_z_sum_long$E_Cluster, c("1" = "Poor", "2" = "Strong"))
+
+# add game style category #
+e_z_sum_long$Category <- "E"
+
+```
+
+##### Transform and tidy counter attack game actions data frame for presentation
+```{r gac compare}
+# game actions counter #
+# transform from wide to long #
+gac_z_sum_long <- GAC_z_sum %>%
+  pivot_longer(cols = ACC_Dribble:D25C_Pass,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+gac_z_sum_long$GAC_Cluster <- as.factor(gac_z_sum_long$GAC_Cluster)
+gac_z_sum_long$GAC_Cluster <- revalue(gac_z_sum_long$GAC_Cluster, c("1" = "Dribble", "2" = "Pass"))
+
+# add game style category #
+gac_z_sum_long$Category <- "GAC"
+
+```
+
+##### Transform and tidy counter attack data frame for presentation
+```{r c compare}
+# counter #
+# transform from wide to long #
+c_z_sum_long <- counter_z_sum %>%
+  pivot_longer(cols = A25_Time_C:C_EN,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+c_z_sum_long$C_Cluster <- as.factor(c_z_sum_long$C_Cluster)
+c_z_sum_long$C_Cluster <- revalue(c_z_sum_long$C_Cluster, c("1" = "Poor", "2" = "Strong"))
+
+# add game style category #
+c_z_sum_long$Category <- "C"
+
+
+```
+
+##### Transform and tidy set pieces data frame for presentation
+```{r sp compare}
+# set pieces #
+# transform from wide to long #
+sp_z_sum_long <- set_piece_z_sum %>%
+  pivot_longer(cols = SP_Total:SP_Goal,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# change cluster to a factor and rename #
+sp_z_sum_long$SP_Cluster <- as.factor(sp_z_sum_long$SP_Cluster)
+sp_z_sum_long$SP_Cluster <- revalue(sp_z_sum_long$SP_Cluster, c("1" = "Low", "2" = "High"))
+
+# add game style category #
+sp_z_sum_long$Category <- "SP"
+
+
+```
+
+##### Join game style categories into one
+```{r all variables}
+# join game style clusters into one #
+cluster_avg <- bind_rows(gae_z_sum_long, e_z_sum_long, gac_z_sum_long, c_z_sum_long, sp_z_sum_long, tempo_z_sum_long)
+
+
+# save data frame #
+write_xlsx(cluster_avg, "Data/Processed Data//Cluster_Averages_Women.xlsx")
+
+cluster_avg2 <- head(cluster_avg)
+knitr::kable(cluster_avg2[, 1:4], caption = "League Game Style Cluster Averages")
+
+```
+
+#### 29. IDENTIFY TEAM GAME STYLE AVERAGES
+##### Calculate averages per team per match status per game style type 
+```{r k teams MS sum}
+
+# established avg # 
+established_team_ms_sum <- established_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:40, mean))
+
+established_team_ms_z_sum <- established_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:40, mean))
+
+# counter avg #
+counter_team_ms_sum <- counter_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:35, mean))
+
+counter_team_ms_z_sum <- counter_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:35, mean))
+
+# set piece avg #
+set_piece_team_ms_sum <- set_piece_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:8, mean))
+
+set_piece_team_ms_z_sum <- set_piece_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:8, mean))
+
+# tempo avg # 
+tempo_team_ms_sum <- Tempo_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:15, mean))
+
+tempo_team_ms_z_sum <- Tempo_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:15, mean))
+
+# gae avg #
+GAE_team_ms_sum <- GAE_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:20, mean))
+
+GAE_team_ms_z_sum <- GAE_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:20, mean))
+
+# gac avg #
+GAC_team_ms_sum <- GAC_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:20, mean))
+
+GAC_team_ms_z_sum <- GAC_z_cluster %>%
+  group_by(Team, Match.Status) %>%
+  summarise(across(7:20, mean))
+```
+
+#### 30. EXPORT TEAM GAME STYLE AVERAGES DATA
+##### Transform and tidy established attack game actions per team data frame for presentation
+```{r gae team}
+# game actions established #
+# transform from wide to long #
+gae_team_ms_sum <- GAE_team_ms_sum %>% 
+  pivot_longer(cols = ACE_Cross:D25E_Pass,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transform zscores from wide to long #
+gae_z_team_ms_sum <- GAE_team_ms_z_sum %>%
+  pivot_longer(cols = ACE_Cross:D25E_Pass,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+gaez_team_ms <- bind_cols(gae_team_ms_sum, zscore = gae_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+gaez_team_ms$Value <- round(gaez_team_ms$Value, digits = 0)
+
+# add game style category #
+gaez_team_ms$Category <- "GAE"
+
+```
+
+##### Transform and tidy established attack per team data frame for presentation
+```{r e team}
+# established #
+# transform from wide to long #
+e_team_ms_sum <- established_team_ms_sum %>% 
+  pivot_longer(cols = A25_Time_E:E_SPN,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transform zscores from wide to long #
+e_z_team_ms_sum <- established_team_ms_z_sum %>%
+  pivot_longer(cols = A25_Time_E:E_SPN,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+ez_team_ms <- bind_cols(e_team_ms_sum, zscore = e_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+ez_team_ms$Value <- round(ez_team_ms$Value, digits = 0)
+
+# add game style category #
+ez_team_ms$Category <- "E"
+
+```
+
+##### Transform and tidy counter attack game actions per team data frame for presentation
+```{r gac team}
+# game actions counter #
+# transform from wide to long #
+gac_team_ms_sum <- GAC_team_ms_sum %>% 
+  pivot_longer(cols = ACC_Dribble:D25C_Pass,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transform zscores from wide to long #
+gac_z_team_ms_sum <- GAC_team_ms_z_sum %>%
+  pivot_longer(cols = ACC_Dribble:D25C_Pass,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+gacz_team_ms <- bind_cols(gac_team_ms_sum, zscore = gac_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+gacz_team_ms$Value <- round(gacz_team_ms$Value, digits = 0)
+
+# add game style category #
+gacz_team_ms$Category <- "GAC"
+```
+
+##### Transform and tidy counter attack per team data frame for presentation
+```{r c team}
+# counter #
+# transform from wide to long #
+c_team_ms_sum <- counter_team_ms_sum %>% 
+  pivot_longer(cols = A25_Time_C:C_EN,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transform zscores from wide to long #
+c_z_team_ms_sum <- counter_team_ms_z_sum %>% 
+  pivot_longer(cols = A25_Time_C:C_EN,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+cz_team_ms <- bind_cols(c_team_ms_sum, zscore = c_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+cz_team_ms$Value <- round(cz_team_ms$Value, digits = 0)
+
+# add game style category #
+cz_team_ms$Category <- "C"
+
+
+```
+
+##### Transform and tidy set pieces per team data frame for presentation
+```{r sp team}
+# set pieces #
+# transform from wide to long #
+sp_team_ms_sum <- set_piece_team_ms_sum %>% 
+  pivot_longer(cols = SP_Total:SP_Goal,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transfrom zscores from wide to long #
+sp_z_team_ms_sum <- set_piece_team_ms_z_sum %>%
+  pivot_longer(cols = SP_Total:SP_Goal,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+spz_team_ms<-bind_cols(sp_team_ms_sum, zscore = sp_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+spz_team_ms$Value <- round(spz_team_ms$Value, digits = 0)
+
+# add game style category #
+spz_team_ms$Category <- "SP"
+
+
+```
+
+##### Transform and tidy tempo per team data frame for presentation
+```{r tempo team}
+# tempo #
+# transform from wide to long #
+Tempo_team_ms_sum <- tempo_team_ms_sum %>% 
+  pivot_longer(cols = GA_Total:GA_S,
+               names_to = "Variable",
+               values_to = "Value")
+
+# transform zscores from wide to long #
+Tempo_z_team_ms_sum <- tempo_team_ms_z_sum %>%
+  pivot_longer(cols = GA_Total:GA_S,
+               names_to = "Variable",
+               values_to = "zscore")
+
+# add zscores to real values #
+tempoz_team_ms <- bind_cols(Tempo_team_ms_sum, zscore = Tempo_z_team_ms_sum$zscore)
+
+# round zscores to 2 digits #
+tempoz_team_ms$Value <- round(tempoz_team_ms$Value, digits = 0)
+
+# add game style category #
+tempoz_team_ms$Category <- "T"
+
+```
+
+##### Join team game style categories into one
+```{r all variables team}
+# join game style cluster variables into one #
+gs_variables <- bind_rows(gaez_team_ms, ez_team_ms, gacz_team_ms, cz_team_ms, spz_team_ms, tempoz_team_ms)
+
+
+# save data frame #
+write_xlsx(gs_variables, "Data/Processed Data//GS_Variables_Women2.xlsx")
+
+gs_variables2 <- head(gs_variables)
+knitr::kable(gs_variables2, caption = "Team Game Style Cluster Averages")
+```
+
+#### 31. EXPORT REFERENCE TABLES DATA
+##### Calculate and tidy unstandardised values for established attack for presentation
+```{r k avg e}
+
+# established avg #
+established_avg <- established_cluster %>%
+  summarise(across(9:42, mean))
+
+# round to 1 digits #
+established_avg <- round(established_avg, digits = 1)
+
+established_avg <- rename(established_avg, "Time in A25 (%)" = "A25_Time_E", 
+                                           "Time in A50 (%)" = "A50_Time_E", 
+                                           "Time in AC (%)" = "AC_Time_E", 
+                                           "Time in D25 (%)" = "D25_Time_E", 
+                                           "Time in D50 (%)" = "D50_Time_E", 
+                                           "A25 Main:Gain" = "A25E_Main_Gain", 
+                                           "A25 Retain:Turnover" = "A25E_Retain_Turnover", 
+                                           "A50 Retain:Turnover" = "A50E_Retain_Turnover", 
+                                           "D50 Retain:Turnover" = "D50E_Retain_Turnover", 
+                                           "D25 Retain:Turnover" = "D25E_Retain_Turnover", 
+                                           "Stoppages A25 (%)" = "S_A25E",  
+                                           "Stoppages A50 (%)" = "S_A50E", 
+                                           "Stoppages AC (%)" = "S_ACE", 
+                                           "Stoppages D25 (%)" = "S_D25E", 
+                                           "Stoppages D50 (%)" = "S_D50E", 
+                                           "A25 Slow:Fast" = "A25E_S_F", 
+                                           "A50 Slow:Fast" = "A50E_S_F", 
+                                           "D50 Slow:Fast" = "D50E_S_F", 
+                                           "D25 Slow:Fast" = "D25E_S_F", 
+                                           "Turnover Stoppages (%)" = "TE_Stoppages", 
+                                           "Turnovers Open Play (%)" = "TE_Play", 
+                                           "Turnovers High Pressure (%)" = "TE_High", 
+                                           "Turnovers Medium Pressure (%)" = "TE_Medium", 
+                                           "Turnovers Low Pressure (%)" = "TE_Low", 
+                                           "Turnovers A25 (%)" = "TE_A25", 
+                                           "Turnovers A50 (%)" = "TE_A50", 
+                                           "Turnovers AC (%)" = "TE_AC", 
+                                           "Turnovers D50 (%)" = "TE_D50", 
+                                           "Turnovers D25 (%)" = "TE_D25", 
+                                           "EA/GS" = "E_GS", 
+                                           "EA/Goal" = "E_Goal", 
+                                           "Goal Shots per EA (%)" = "E_GSN", 
+                                           "Set Pieces per EA (%)" = "E_SPN", 
+                                           "Turnovers per EA (%)" = "E_TN")
+
+# reorder variables #
+established_avg <- established_avg[, c(32, 34, 33, 3,1,2, 5, 4, 6, 7, 8, 9, 10, 13, 11, 12, 15, 14, 16, 17, 18, 19, 27, 25, 26, 29, 28, 21, 20, 22, 24, 23, 30, 31)]
+
+# transform from wide to long #
+established_avg_long <- established_avg %>%
+  pivot_longer(cols = `Goal Shots per EA (%)`:`EA/Goal`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save data frame #
+write_xlsx(established_avg_long, "Data/Processed Data//Established_Average_Women.xlsx")
+
+established_avg_long2 <- head(established_avg_long)
+knitr::kable(established_avg_long2, caption = "League Established Average")
+```
+
+##### Calculate and tidy unstandardised values for counter attack for presentation
+```{r k avg c}
+# counter avg #
+counter_avg <- counter_cluster %>%
+  summarise(across(9:37, mean))
+
+# round to 1 digits #
+counter_avg <- round(counter_avg, digits = 1)
+
+counter_avg <- rename(counter_avg, "Time in A25 (%)" = "A25_Time_C", 
+                                   "Time in A50 (%)" = "A50_Time_C", 
+                                   "Time in AC (%)" = "AC_Time_C", 
+                                   "Time in D25 (%)" = "D25_Time_C", 
+                                   "Time in D50 (%)" = "D50_Time_C", 
+                                   "D25 Main:Gain" = "D25C_Main_Gain", 
+                                   "A50 Retain:Turnover" = "A50C_Retain_Turnover",
+                                   "D25 Retain:Turnover" = "D25C_Retain_Turnover", 
+                                   "Stoppages A25 (%)" = "S_A25C", 
+                                   "Stoppages A25 (%)" = "S_A25C", 
+                                   "Stoppages A50 (%)" = "S_A50C", 
+                                   "Stoppages AC (%)" = "S_ACC", 
+                                   "Stoppages D25 (%)" = "S_D25C", 
+                                   "Stoppages D50 (%)" = "S_D50C",  
+                                   "Turnover Stoppages (%)" = "TC_Stoppages", 
+                                   "Turnovers Open Play (%)" = "TC_Play", 
+                                   "Turnovers High Pressure (%)" = "TC_High", 
+                                   "Turnovers Medium Pressure (%)" = "TC_Medium", 
+                                   "Turnovers Low Pressure (%)" = "TC_Low", 
+                                   "Turnovers A25 (%)" = "TC_A25", 
+                                   "Turnovers A50 (%)" = "TC_A50", 
+                                   "Turnovers AC (%)" = "TC_AC", 
+                                   "Turnovers D50 (%)" = "TC_D50", 
+                                   "Turnovers D25 (%)" = "TC_D25", 
+                                   "CA/GS" = "C_GS", 
+                                   "CA/Goal" = "C_Goal", 
+                                   "Goal Shots per CA (%)" = "C_GSN", 
+                                   "Set Pieces per CA (%)" = "C_SPN", 
+                                   "Turnovers per CA (%)" = "C_TN" , 
+                                   "CA to EA (%)" = "C_EN")
+
+# reorder variables #
+counter_avg <- counter_avg[, c( 26, 28, 29, 27, 3, 1, 2, 5, 4,  7, 6, 8, 11, 9, 10, 12, 13, 20, 23, 19, 22, 21, 15, 14, 16, 17, 18, 24, 25)]
+
+# transform from wide to long #
+counter_avg_long <- counter_avg %>%
+  pivot_longer(cols = `Goal Shots per CA (%)`:`CA/Goal`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save data frame #
+write_xlsx(counter_avg_long, "Data/Processed Data//Counter_Average_Women.xlsx")
+
+counter_avg_long2 <- head(counter_avg_long)
+knitr::kable(counter_avg_long2, caption = "League Counter Average")
+```
+
+##### Calculate and tidy unstandardised values for set pieces for presentation
+```{r k avg sp}
+# set piece avg #
+set_piece_avg <- set_piece_cluster %>%
+  summarise(across(9:10, mean))
+
+# round to 1 digits #
+set_piece_avg <- round(set_piece_avg, digits = 1)
+
+set_piece_avg <- rename(set_piece_avg, "SP/Game" = "SP_Total", 
+                                       "SP/Goal" = "SP_Goal")
+
+# transform from wide to long #
+set_piece_avg_long <- set_piece_avg %>%
+  pivot_longer(cols = `SP/Game`:`SP/Goal`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save data frame #
+write_xlsx(set_piece_avg_long, "Data/Processed Data//Set_Piece_Average_Women.xlsx")
+
+set_piece_avg_long2 <- head(set_piece_avg_long)
+knitr::kable(set_piece_avg_long2, caption = "League Set Piece Average")
+```
+
+##### Calculate and tidy unstandardised values for tempo for presentation
+```{r k avg t}
+# tempo avg #
+tempo_avg <- Tempo_cluster %>%
+  summarise(across(9:17, mean))
+
+# round to 1 digits #
+tempo_avg <- round(tempo_avg, digits = 1)
+
+tempo_avg <- rename(tempo_avg, "Game Actions/Game" = "GA_Total", 
+                               "Penetrating Game Actions/Game" = "Penetrating", 
+                               "EA/Game" = "E_Total",
+                               "CA/Game" = "C_Total", 
+                               "Game Actions/EA" = "GA_E", 
+                               "Game Actions/CA" = "GA_C", 
+                               "Game Actions/Goal Shot" = "GA_GS", 
+                               "Game Actions/Turnover" = "GA_T", 
+                               "Game Actions/Stoppage" = "GA_S")
+
+# reorder variables #
+tempo_avg <- tempo_avg[, c( 5, 6, 9, 8, 7, 1, 3, 4, 2)]
+
+# transform from wide to long #
+tempo_avg_long <- tempo_avg %>%
+  pivot_longer(cols = `Game Actions/EA`:`Penetrating Game Actions/Game`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save data frame #
+write_xlsx(tempo_avg_long, "Data/Processed Data//Tempo_Average_Women.xlsx")
+
+tempo_avg_long2 <- head(tempo_avg_long)
+knitr::kable(tempo_avg_long2, caption = "League Tempo Average")
+```
+
+##### Calculate and tidy unstandardised values for established attack game actions for presentation
+```{r kavg gae}
+# gae avg #
+GAE_avg <- GAE_cluster %>%
+  summarise(across(9:22, mean))
+
+# round to 1 digits #
+GAE_avg <- round(GAE_avg, digits = 1)
+
+GAE_avg <- rename(GAE_avg, "AC Dribble (%)" = "ACE_Dribble", 
+                           "AC Pass (%)" = "ACE_Pass",
+                           "AC Cross (%)" = "ACE_Cross", 
+                           "A25 Cross (%)" = "A25E_Cross", 
+                           "A25 Dribble (%)" = "A25E_Dribble", 
+                           "A25 Pass (%)" = "A25E_Pass", 
+                           "A50 Dribble (%)" = "A50E_Dribble", 
+                           "A50 Pass (%)" = "A50E_Pass", 
+                           "D50 Dribble (%)" = "D50E_Dribble", 
+                           "D50 Overhead (%)" = "D50E_Overhead",
+                           "D50 Pass (%)" = "D50E_Pass", 
+                           "D25 Dribble (%)" = "D25E_Dribble", 
+                           "D25 Overhead (%)" = "D25E_Overhead", 
+                           "D25 Pass (%)" = "D25E_Pass")
+
+# reorder variables #
+GAE_avg <- GAE_avg[, c( 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12, 13, 14)]
+
+# transform from wide to long #
+GAE_avg_long <- GAE_avg %>%
+  pivot_longer(cols = `AC Cross (%)`:`D25 Pass (%)`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save dataframe #
+write_xlsx(GAE_avg_long, "Data/Processed Data//GAE_Average_Women.xlsx")
+
+GAE_avg_long2 <- head(GAE_avg_long)
+knitr::kable(GAE_avg_long2, caption = "League Game Actions Established Average")
+```
+
+##### Calculate and tidy unstandardised values for counter attack game actions for presentation
+```{r k avg gac}
+# gac avg #
+GAC_avg <- GAC_cluster %>%
+  summarise(across(9:22, mean))
+
+# round to 1 digits #
+GAC_avg <- round(GAC_avg, digits = 1)
+
+GAC_avg <- rename(GAC_avg, "AC Dribble (%)" = "ACC_Dribble", 
+                           "AC Pass (%)" = "ACC_Pass",
+                           "AC Cross (%)" = "ACC_Cross", 
+                           "A25 Cross (%)" = "A25C_Cross", 
+                           "A25 Dribble (%)" = "A25C_Dribble", 
+                           "A25 Pass (%)" = "A25C_Pass", 
+                           "A50 Dribble (%)" = "A50C_Dribble", 
+                           "A50 Pass (%)" = "A50C_Pass", 
+                           "A50 Through Ball (%)" = "A50C_Through Ball", 
+                           "D50 Dribble (%)" = "D50C_Dribble",  
+                           "D50 Pass (%)" = "D50C_Pass", 
+                           "D25 Dribble (%)" = "D25C_Dribble", 
+                           "D25 Clearance (%)" = "D25C_Clearance", 
+                           "D25 Pass (%)" = "D25C_Pass")
+
+# reorder variables #
+GAC_avg<-GAC_avg[, c(3, 1, 2, 6, 4, 5, 7, 8, 9, 11, 10, 12, 13, 14)]
+
+# transform from wide to long #
+GAC_avg_long <- GAC_avg %>%
+  pivot_longer(cols = `AC Cross (%)`:`D25 Pass (%)`,
+               names_to = "Variables",
+               values_to = "Average")
+
+# save data frame #
+write_xlsx(GAC_avg_long, "Data/Processed Data//GAC_Average_Women.xlsx")
+
+GAC_avg_long2 <- head(GAC_avg_long)
+knitr::kable(GAC_avg_long2, caption = "League Game Actions Counter Average")
+```
+
+### CREATE GAME STYLE TEAM PROFILES
+#### 32. CALCULATE GAMES PER CLUSTER PER MATCH STATUS
+##### Split game styles data per team
+```{r split profiles}
+# split clusters data frame by team #
+profiles_list <- split(mop_c, mop_c$Team)
+
+```
+
+##### Identify games per established attack game actions game style type per team when winning
+```{r win_gae}
+# GAE #
+win_gae_f <- function(x){
+# filter match status #
+win_gae <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_gae <- table(win_gae$Match.Status, win_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_gae <- round(prop.table(win_gae)*100, digits = 0)
+
+# convert to data frame #
+win_gae <- as.data.frame.matrix(win_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_gae[www[!(www %in% colnames(win_gae))]] = 0
+
+# rename cluster types #
+win_gae <- rename(win_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+win_gae_list <- list()
+for (i in seq_along(profiles_list)){
+  win_gae_list[[i]] <- win_gae_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per team when winning
+```{r win_e}
+# E #
+win_e_f <- function(x){
+# filter match status #
+win_e <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_e <- table(win_e$Match.Status, win_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_e <- round(prop.table(win_e)*100, digits = 0) 
+
+# convert to data frame #
+win_e <- as.data.frame.matrix(win_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_e[www[!(www %in% colnames(win_e))]] = 0
+
+# rename cluster types #
+win_e <- rename(win_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+win_e_list <- list()
+for (i in seq_along(profiles_list)){
+  win_e_list[[i]] <- win_e_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per team when winning
+```{r win_gac}
+# GAC #
+win_gac_f <- function(x){
+# filter match status #
+win_gac <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_gac <- table(win_gac$Match.Status, win_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_gac <- round(prop.table(win_gac)*100, digits = 0)
+
+# convert to data frame #
+win_gac <- as.data.frame.matrix(win_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_gac[www[!(www %in% colnames(win_gac))]] = 0
+
+# rename cluster types #
+win_gac <- rename(win_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+win_gac_list <- list()
+for (i in seq_along(profiles_list)){
+  win_gac_list[[i]] <- win_gac_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per team when winning
+```{r win_c}
+# C #
+win_c_f <- function(x){
+# filter match status #
+win_c <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_c <- table(win_c$Match.Status, win_c$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_c <- round(prop.table(win_c)*100, digits = 0)
+
+# convert to data frame #
+win_c <- as.data.frame.matrix(win_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_c[www[!(www %in% colnames(win_c))]] = 0
+
+# rename cluster types #
+win_c <- rename(win_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+win_c_list <- list()
+for (i in seq_along(profiles_list)){
+  win_c_list[[i]] <- win_c_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per team when winning
+```{r win_sp}
+# SP #
+win_sp_f <- function(x){
+# filter match status #
+win_sp <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_sp <- table(win_sp$Match.Status, win_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_sp <- round(prop.table(win_sp)*100, digits = 0)
+
+# convert to data frame #
+win_sp <- as.data.frame.matrix(win_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_sp[www[!(www %in% colnames(win_sp))]] = 0
+
+# rename cluster types #
+win_sp <- rename(win_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+win_sp_list <- list()
+for (i in seq_along(profiles_list)){
+  win_sp_list[[i]] <- win_sp_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per team when winning
+```{r win_t}
+# Tempo #
+win_t_f <- function(x){
+# filter match status #
+win_t <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_t <- table(win_t$Match.Status, win_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_t <- round(prop.table(win_t)*100, digits = 0)
+
+# convert to data frame #
+win_t <- as.data.frame.matrix(win_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_t[www[!(www %in% colnames(win_t))]] = 0
+
+# rename cluster types #
+win_t <- rename(win_t,  "Direct" = "1", "Poss" = "2")
+}
+
+win_t_list <- list()
+for (i in seq_along(profiles_list)){
+  win_t_list[[i]] <- win_t_f(profiles_list[[i]])
+}
+```
+
+##### Join all teams winning game style categories into one
+```{r win all}
+# join game style categories per match status into one #
+win_all_list <- list()
+for (i in seq_along(profiles_list)){
+win_all_list[[i]] <- bind_cols(win_gae_list[[i]], win_e_list[[i]], win_gac_list[[i]], win_c_list[[i]], win_sp_list[[i]], win_t_list[[i]])
+
+win_all_list[[i]] <- rownames_to_column(win_all_list[[i]], var = "MS")
+}
+
+```
+
+##### Identify games per established attack game actions game style type per team when losing
+```{r lose_gae}
+# GAE #
+lose_gae_f <- function(x){
+# filter match status #
+lose_gae <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_gae <- table(lose_gae$Match.Status, lose_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_gae <- round(prop.table(lose_gae)*100, digits = 0)
+
+# convert to data frame #
+lose_gae <- as.data.frame.matrix(lose_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_gae[www[!(www %in% colnames(lose_gae))]] = 0
+
+# rename cluster types #
+lose_gae <- rename(lose_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+lose_gae_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_gae_list[[i]] <- lose_gae_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per team when losing
+```{r lose_e}
+# E #
+lose_e_f <- function(x){
+# filter match status #
+lose_e <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_e <- table(lose_e$Match.Status, lose_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_e <- round(prop.table(lose_e)*100, digits = 0) 
+
+# convert to data frame #
+lose_e <- as.data.frame.matrix(lose_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_e[www[!(www %in% colnames(lose_e))]] = 0
+
+# rename cluster types #
+lose_e <- rename(lose_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+lose_e_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_e_list[[i]] <- lose_e_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per team when losing
+```{r lose_gac}
+# GAC #
+lose_gac_f <- function(x){
+# filter match status #
+lose_gac <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_gac <- table(lose_gac$Match.Status, lose_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_gac <- round(prop.table(lose_gac)*100, digits = 0)
+
+# convert to data frame #
+lose_gac <- as.data.frame.matrix(lose_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_gac[www[!(www %in% colnames(lose_gac))]] = 0
+
+# rename cluster types #
+lose_gac <- rename(lose_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+lose_gac_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_gac_list[[i]] <- lose_gac_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per team when losing
+```{r lose_c}
+# C #
+lose_c_f <- function(x){
+# filter match status #
+lose_c <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_c <- table(lose_c$Match.Status, lose_c$C_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_c <- round(prop.table(lose_c)*100, digits = 0)
+
+# convert to data frame #
+lose_c <- as.data.frame.matrix(lose_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_c[www[!(www %in% colnames(lose_c))]] = 0
+
+# rename cluster types #
+lose_c <- rename(lose_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+lose_c_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_c_list[[i]] <- lose_c_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per team when losing
+```{r lose_sp}
+# SP #
+lose_sp_f <- function(x){
+# filter match status #
+lose_sp <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_sp <- table(lose_sp$Match.Status, lose_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_sp <- round(prop.table(lose_sp)*100, digits = 0)
+
+# convert to data frame #
+lose_sp <- as.data.frame.matrix(lose_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_sp[www[!(www %in% colnames(lose_sp))]] = 0
+
+# rename cluster types #
+lose_sp <- rename(lose_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+lose_sp_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_sp_list[[i]] <- lose_sp_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per team when losing
+```{r lose_t}
+# Tempo #
+lose_t_f <- function(x){
+# filter match status #
+lose_t <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_t <- table(lose_t$Match.Status, lose_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_t <- round(prop.table(lose_t)*100, digits = 0)
+
+# convert to data frame #
+lose_t <- as.data.frame.matrix(lose_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_t[www[!(www %in% colnames(lose_t))]] = 0
+
+# rename cluster types #
+lose_t <- rename(lose_t,  "Direct" = "1", "Poss" = "2")
+}
+
+lose_t_list <- list()
+for (i in seq_along(profiles_list)){
+  lose_t_list[[i]] <- lose_t_f(profiles_list[[i]])
+}
+```
+
+##### Join all teams losing game style categories into one
+```{r lose all}
+# join game style categories per match status into one #
+lose_all_list <- list()
+for (i in seq_along(profiles_list)){
+lose_all_list[[i]] <- bind_cols(lose_gae_list[[i]], lose_e_list[[i]], lose_gac_list[[i]], lose_c_list[[i]], lose_sp_list[[i]], lose_t_list[[i]])
+
+lose_all_list[[i]] <- rownames_to_column(lose_all_list[[i]], var = "MS")
+}
+
+```
+
+##### Identify games per established attack game actions game style type per team when drawing
+```{r draw_gae}
+# GAE #
+draw_gae_f <- function(x){
+# filter match status #
+draw_gae <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_gae <- table(draw_gae$Match.Status, draw_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_gae <- round(prop.table(draw_gae)*100, digits = 0)
+
+# convert to data frame #
+draw_gae <- as.data.frame.matrix(draw_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_gae[www[!(www %in% colnames(draw_gae))]] = 0
+
+# rename cluster types #
+draw_gae <- rename(draw_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+draw_gae_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_gae_list[[i]] <- draw_gae_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per team when drawing
+```{r draw_e}
+# E # 
+draw_e_f <- function(x){
+# filter match status #
+draw_e <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_e <- table(draw_e$Match.Status, draw_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_e <- round(prop.table(draw_e)*100, digits = 0) 
+
+# convert to data frame #
+draw_e <- as.data.frame.matrix(draw_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_e[www[!(www %in% colnames(draw_e))]] = 0
+
+# rename cluster types #
+draw_e <- rename(draw_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+draw_e_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_e_list[[i]] <- draw_e_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per team when drawing
+```{r draw_gac}
+# GAC #
+draw_gac_f <- function(x){
+# filter team and match status #
+draw_gac <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_gac <- table(draw_gac$Match.Status, draw_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_gac <- round(prop.table(draw_gac)*100, digits = 0)
+
+# convert to data frame #
+draw_gac <- as.data.frame.matrix(draw_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_gac[www[!(www %in% colnames(draw_gac))]] = 0
+
+# rename cluster types #
+draw_gac <- rename(draw_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+draw_gac_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_gac_list[[i]] <- draw_gac_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per team when drawing
+```{r draw_c}
+# C #
+draw_c_f <- function(x){
+# filter match status #
+draw_c <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_c <- table(draw_c$Match.Status, draw_c$C_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_c <- round(prop.table(draw_c)*100, digits = 0)
+
+# convert to data frame #
+draw_c <- as.data.frame.matrix(draw_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_c[www[!(www %in% colnames(draw_c))]] = 0
+
+# rename cluster types #
+draw_c <- rename(draw_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+draw_c_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_c_list[[i]] <- draw_c_f(profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per team when drawing
+```{r draw_sp}
+# SP #
+draw_sp_f <- function(x){
+# filter match status #
+draw_sp <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_sp <- table(draw_sp$Match.Status, draw_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_sp <- round(prop.table(draw_sp)*100, digits = 0)
+
+# convert to data frame #
+draw_sp <- as.data.frame.matrix(draw_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_sp[www[!(www %in% colnames(draw_sp))]] = 0
+
+# rename cluster types #
+draw_sp <- rename(draw_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+draw_sp_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_sp_list[[i]] <- draw_sp_f(profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per team when drawing
+```{r draw_t}
+# Tempo #
+draw_t_f <- function(x){
+# filter match status #
+draw_t <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_t <- table(draw_t$Match.Status, draw_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_t <- round(prop.table(draw_t)*100, digits = 0)
+
+# convert to data frame #
+draw_t <- as.data.frame.matrix(draw_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_t[www[!(www %in% colnames(draw_t))]] = 0
+
+# rename cluster types #
+draw_t <- rename(draw_t,  "Direct" = "1", "Poss" = "2")
+}
+
+draw_t_list <- list()
+for (i in seq_along(profiles_list)){
+  draw_t_list[[i]] <- draw_t_f(profiles_list[[i]])
+}
+```
+
+##### Join all teams drawing game style categories into one
+```{r draw all}
+# join game style categories per match status into one #
+draw_all_list <- list()
+for (i in seq_along(profiles_list)){
+draw_all_list[[i]] <- bind_cols(draw_gae_list[[i]], draw_e_list[[i]], draw_gac_list[[i]], draw_c_list[[i]], draw_sp_list[[i]], draw_t_list[[i]])
+
+draw_all_list[[i]] <- rownames_to_column(draw_all_list[[i]], var = "MS")
+}
+
+```
+
+#### 35. EXPORT DATA
+##### Join all team match status data frames into one and tidy for presentation
+```{r team profiles}
+all_ms_list <- list()
+for(i in seq_along(profiles_list)){
+# join match status data frames into one #
+all_ms_list[[i]] <- bind_rows(win_all_list[[i]], lose_all_list[[i]], draw_all_list[[i]])
+}
+
+# add team names #
+game_names <- names(profiles_list)
+for (i in seq_along(game_names)){
+  all_ms_list[[i]]$Team <- game_names[i]
+}
+
+# join teams into one #
+all_teams <- bind_rows(all_ms_list)
+
+# remove unnecessary columns #
+team_prof <- select(all_teams, Team, MS, GAE_Pass, GAE_Dribble, E_Strong, GAC_Pass, GAC_Dribble, C_Strong, SP_High, Direct, Poss)
+
+# transform from wide to long #
+team_prof_long <- team_prof %>%
+  pivot_longer(cols = GAE_Pass:Poss,
+               names_to = "Category",
+               values_to = "Prop")
+
+# categories #
+t <- c("Direct", "Poss")
+ea <- c("E_Strong")
+GAE <- c("GAE_Dribble", "GAE_Pass")
+ca <- c("C_Strong")
+GAC <- c("GAC_Dribble", "GAC_Pass")
+SP <- c("SP_High")
+
+# add new column identifying moment of play #
+team_prof_long <- team_prof_long %>%
+  mutate(
+    MOP = case_when(
+      Category %in% ea ~ "EA",
+      Category %in% ca ~ "CA",
+      Category %in% SP ~ "SP",
+      Category %in% t ~ "Tempo",
+      Category %in% GAE ~ "GAE",
+      Category %in% GAC ~"GAC"
+    )
+  )
+
+# change MOP to factor and reorder variables #
+team_prof_long$MOP <- factor(team_prof_long$MOP, levels = c("GAE", "EA", "GAC", "CA", "SP", "Tempo"))
+
+
+# save data frame #
+write_xlsx(team_prof_long, "Data/Processed Data//Att_Game_Styles_Women.xlsx")
+
+team_prof_long2 <- head(team_prof_long)
+knitr::kable(team_prof_long2, caption = "Team Game Style Profiles")
+```
+
+#### 36. CALCULATE OPPOSITION GAMES PER CLUSTER PER MATCH STATUS
+##### Split game styles data per opposition
+```{r split opp}
+# split clusters data frame by team #
+opp_profiles_list <- split(mop_c, mop_c$Opposition)
+
+```
+
+##### Identify games per established attack game actions game style type per opposition when winning
+```{r win_gae opp}
+# GAE #
+win_gae_f <- function(x){
+# filter match status #
+win_gae <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_gae <- table(win_gae$Match.Status, win_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_gae <- round(prop.table(win_gae)*100, digits = 0)
+
+# convert to data frame #
+win_gae <- as.data.frame.matrix(win_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_gae[www[!(www %in% colnames(win_gae))]] = 0
+
+# rename cluster types #
+win_gae <- rename(win_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+win_gae_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_gae_list[[i]] <- win_gae_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per opposition when winning
+```{r win_e opp}
+# E #
+win_e_f <- function(x){
+# filter match status #
+win_e <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_e <- table(win_e$Match.Status, win_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_e <- round(prop.table(win_e)*100, digits = 0) 
+
+# convert to data frame #
+win_e <- as.data.frame.matrix(win_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_e[www[!(www %in% colnames(win_e))]] = 0
+
+# rename cluster types #
+win_e <- rename(win_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+win_e_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_e_list[[i]] <- win_e_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per opposition when winning
+```{r win_gac opp}
+# GAC #
+win_gac_f <- function(x){
+# filter match status #
+win_gac <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_gac <- table(win_gac$Match.Status, win_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_gac <- round(prop.table(win_gac)*100, digits = 0)
+
+# convert to data frame #
+win_gac <- as.data.frame.matrix(win_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_gac[www[!(www %in% colnames(win_gac))]] = 0
+
+# rename cluster types #
+win_gac <- rename(win_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+win_gac_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_gac_list[[i]] <- win_gac_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per opposition when winning
+```{r win_c opp}
+# C #
+win_c_f <- function(x){
+# filter match status #
+win_c <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_c <- table(win_c$Match.Status, win_c$C_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_c <- round(prop.table(win_c)*100, digits = 0)
+
+# convert to data frame #
+win_c <- as.data.frame.matrix(win_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_c[www[!(www %in% colnames(win_c))]] = 0
+
+# rename cluster types #
+win_c <- rename(win_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+win_c_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_c_list[[i]] <- win_c_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per opposition when winning
+```{r win_sp opp}
+# SP #
+win_sp_f <- function(x){
+# filter match status #
+win_sp <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_sp <- table(win_sp$Match.Status, win_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_sp <- round(prop.table(win_sp)*100, digits = 0)
+
+# convert to data frame #
+win_sp <- as.data.frame.matrix(win_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_sp[www[!(www %in% colnames(win_sp))]] = 0
+
+# rename cluster types #
+win_sp <- rename(win_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+win_sp_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_sp_list[[i]] <- win_sp_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per opposition when winning
+```{r win_t opp}
+# Tempo #
+win_t_f <- function(x){
+# filter match status #
+win_t <- filter(x,  Match.Status == "Winning")
+
+# create table with match status as rows and clusters as columns #
+win_t <- table(win_t$Match.Status, win_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+win_t <- round(prop.table(win_t)*100, digits = 0)
+
+# convert to data frame #
+win_t <- as.data.frame.matrix(win_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+win_t[www[!(www %in% colnames(win_t))]] = 0
+
+# rename cluster types #
+win_t <- rename(win_t,  "Direct" = "1", "Poss" = "2")
+}
+
+win_t_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  win_t_list[[i]] <- win_t_f(opp_profiles_list[[i]])
+}
+```
+
+##### Join all oppositions winning game style categories into one
+```{r win all opp}
+# join game style categories per match status into one #
+win_all_list <- list()
+for (i in seq_along(opp_profiles_list)){
+win_all_list[[i]] <- bind_cols(win_gae_list[[i]], win_e_list[[i]], win_gac_list[[i]], win_c_list[[i]], win_sp_list[[i]], win_t_list[[i]])
+
+win_all_list[[i]] <- rownames_to_column(win_all_list[[i]], var = "MS")
+}
+
+```
+
+##### Identify games per established attack game actions game style type per opposition when losing
+```{r lose_gae opp}
+# GAE #
+lose_gae_f <- function(x){
+# filter match status #
+lose_gae <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_gae <- table(lose_gae$Match.Status, lose_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_gae <- round(prop.table(lose_gae)*100, digits = 0)
+
+# convert to data frame #
+lose_gae <- as.data.frame.matrix(lose_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_gae[www[!(www %in% colnames(lose_gae))]] = 0
+
+# rename cluster types #
+lose_gae <- rename(lose_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+lose_gae_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_gae_list[[i]] <- lose_gae_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per opposition when losing
+```{r lose_e opp}
+# E #
+lose_e_f <- function(x){
+# filter match status #
+lose_e <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_e <- table(lose_e$Match.Status, lose_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_e <- round(prop.table(lose_e)*100, digits = 0) 
+
+# convert to data frame #
+lose_e <- as.data.frame.matrix(lose_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_e[www[!(www %in% colnames(lose_e))]] = 0
+
+# rename cluster types #
+lose_e <- rename(lose_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+lose_e_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_e_list[[i]] <- lose_e_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per opposition when losing
+```{r lose_gac opp}
+# GAC #
+lose_gac_f <- function(x){
+# filter match status #
+lose_gac <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_gac <- table(lose_gac$Match.Status, lose_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_gac <- round(prop.table(lose_gac)*100, digits = 0)
+
+# convert to data frame #
+lose_gac <- as.data.frame.matrix(lose_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_gac[www[!(www %in% colnames(lose_gac))]] = 0
+
+# rename cluster types #
+lose_gac <- rename(lose_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+lose_gac_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_gac_list[[i]] <- lose_gac_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per opposition when losing
+```{r lose_c opp}
+# C #
+lose_c_f <- function(x){
+# filter match status #
+lose_c <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_c <- table(lose_c$Match.Status, lose_c$C_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_c <- round(prop.table(lose_c)*100, digits = 0)
+
+# convert to data frame #
+lose_c <- as.data.frame.matrix(lose_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_c[www[!(www %in% colnames(lose_c))]] = 0
+
+# rename cluster types #
+lose_c <- rename(lose_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+lose_c_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_c_list[[i]] <- lose_c_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per opposition when losing
+```{r lose_sp opp}
+# SP #
+lose_sp_f <- function(x){
+# filter match status #
+lose_sp <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_sp <- table(lose_sp$Match.Status, lose_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_sp <- round(prop.table(lose_sp)*100, digits = 0)
+
+# convert to data frame #
+lose_sp <- as.data.frame.matrix(lose_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_sp[www[!(www %in% colnames(lose_sp))]] = 0
+
+# rename cluster types #
+lose_sp <- rename(lose_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+lose_sp_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_sp_list[[i]] <- lose_sp_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per opposition when losing
+```{r lose_t opp}
+# Tempo #
+lose_t_f <- function(x){
+# filter match status #
+lose_t <- filter(x,  Match.Status == "Losing")
+
+# create table with match status as rows and clusters as columns #
+lose_t <- table(lose_t$Match.Status, lose_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+lose_t <- round(prop.table(lose_t)*100, digits = 0)
+
+# convert to data frame #
+lose_t <- as.data.frame.matrix(lose_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+lose_t[www[!(www %in% colnames(lose_t))]] = 0
+
+# rename cluster types #
+lose_t <- rename(lose_t,  "Direct" = "1", "Poss" = "2")
+}
+
+lose_t_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  lose_t_list[[i]] <- lose_t_f(opp_profiles_list[[i]])
+}
+```
+
+##### Join all oppositions game style categories into one
+```{r lose all opp}
+# join game style categories per match status into one #
+lose_all_list <- list()
+for (i in seq_along(opp_profiles_list)){
+lose_all_list[[i]] <- bind_cols(lose_gae_list[[i]], lose_e_list[[i]], lose_gac_list[[i]], lose_c_list[[i]], lose_sp_list[[i]], lose_t_list[[i]])
+
+lose_all_list[[i]] <- rownames_to_column(lose_all_list[[i]], var = "MS")
+}
+
+```
+
+##### Identify games per established attack game actions game style type per opposition when drawing
+```{r draw_gae opp}
+# GAE #
+draw_gae_f <- function(x){
+# filter match status #
+draw_gae <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_gae <- table(draw_gae$Match.Status, draw_gae$GAE_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_gae <- round(prop.table(draw_gae)*100, digits = 0)
+
+# convert to data frame #
+draw_gae <- as.data.frame.matrix(draw_gae)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_gae[www[!(www %in% colnames(draw_gae))]] = 0
+
+# rename cluster types #
+draw_gae <- rename(draw_gae,  "GAE_Pass" = "1", "GAE_Dribble" = "2")
+}
+
+draw_gae_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_gae_list[[i]] <- draw_gae_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per established attack game style type per opposition when drawing
+```{r draw_e opp}
+# E #
+draw_e_f <- function(x){
+# filter match status #
+draw_e <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_e <- table(draw_e$Match.Status, draw_e$E_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_e <- round(prop.table(draw_e)*100, digits = 0) 
+
+# convert to data frame #
+draw_e <- as.data.frame.matrix(draw_e)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_e[www[!(www %in% colnames(draw_e))]] = 0
+
+# rename cluster types #
+draw_e <- rename(draw_e,  "E_Poor" = "1", "E_Strong" = "2")
+}
+
+draw_e_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_e_list[[i]] <- draw_e_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game actions game style type per opposition when drawing
+```{r draw_gac opp}
+# GAC #
+draw_gac_f <- function(x){
+# filter match status #
+draw_gac <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_gac <- table(draw_gac$Match.Status, draw_gac$GAC_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_gac <- round(prop.table(draw_gac)*100, digits = 0)
+
+# convert to data frame #
+draw_gac <- as.data.frame.matrix(draw_gac)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_gac[www[!(www %in% colnames(draw_gac))]] = 0
+
+# rename cluster types #
+draw_gac <- rename(draw_gac,  "GAC_Dribble" = "1", "GAC_Pass" = "2")
+}
+
+draw_gac_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_gac_list[[i]] <- draw_gac_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per counter attack game style type per opposition when drawing
+```{r draw_c opp}
+# C #
+draw_c_f <- function(x){
+# filter match status #
+draw_c <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_c <- table(draw_c$Match.Status, draw_c$C_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_c <- round(prop.table(draw_c)*100, digits = 0)
+
+# convert to data frame #
+draw_c <- as.data.frame.matrix(draw_c)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_c[www[!(www %in% colnames(draw_c))]] = 0
+
+# rename cluster types #
+draw_c <- rename(draw_c,  "C_Poor" = "1", "C_Strong" = "2")
+}
+
+draw_c_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_c_list[[i]] <- draw_c_f(opp_profiles_list[[i]])
+}
+```
+
+##### Identify games per set pieces game style type per opposition when drawing
+```{r draw_sp opp}
+# SP #
+draw_sp_f <- function(x){
+# filter match status #
+draw_sp <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_sp <- table(draw_sp$Match.Status, draw_sp$SP_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_sp <- round(prop.table(draw_sp)*100, digits = 0)
+
+# convert to data frame #
+draw_sp <- as.data.frame.matrix(draw_sp)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_sp[www[!(www %in% colnames(draw_sp))]] = 0
+
+# rename cluster types #
+draw_sp <- rename(draw_sp,  "SP_Low" = "1", "SP_High" = "2")
+}
+
+draw_sp_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_sp_list[[i]] <- draw_sp_f(opp_profiles_list[[i]])
+}
+
+```
+
+##### Identify games per tempo game style type per opposition when drawing
+```{r draw_t opp}
+# Tempo #
+draw_t_f <- function(x){
+# filter match status #
+draw_t <- filter(x,  Match.Status == "Drawing")
+
+# create table with match status as rows and clusters as columns #
+draw_t <- table(draw_t$Match.Status, draw_t$Tempo_Cluster)
+
+# convert to percentages (%games per cluster type) #
+draw_t <- round(prop.table(draw_t)*100, digits = 0)
+
+# convert to data frame #
+draw_t <- as.data.frame.matrix(draw_t)
+
+# list of movement effects #
+www <- c("1", "2")
+
+# check to see if all data frames contain all columns, if not add column=0 #
+draw_t[www[!(www %in% colnames(draw_t))]] = 0
+
+# rename cluster types #
+draw_t <- rename(draw_t,  "Direct" = "1", "Poss" = "2")
+}
+
+draw_t_list <- list()
+for (i in seq_along(opp_profiles_list)){
+  draw_t_list[[i]] <- draw_t_f(opp_profiles_list[[i]])
+}
+```
+
+##### Join all oppositions game style categories into one
+```{r draw all opp}
+# join game style categories per match status into one #
+draw_all_list <- list()
+for (i in seq_along(opp_profiles_list)){
+draw_all_list[[i]] <- bind_cols(draw_gae_list[[i]], draw_e_list[[i]], draw_gac_list[[i]], draw_c_list[[i]], draw_sp_list[[i]], draw_t_list[[i]])
+
+draw_all_list[[i]] <- rownames_to_column(draw_all_list[[i]], var = "MS")
+}
+
+```
+
+#### 37. EXPORT DATA
+##### Join all opposition match status data frames into one and tidy for presentation
+```{r opp profiles}
+all_opp_ms_list <- list()
+for(i in seq_along(opp_profiles_list)){
+# join match status data frames into one #
+all_opp_ms_list[[i]] <- bind_rows(win_all_list[[i]], lose_all_list[[i]], draw_all_list[[i]])
+}
+
+# add team names #
+game_names <- names(opp_profiles_list)
+for (i in seq_along(game_names)){
+  all_opp_ms_list[[i]]$Team <- (game_names[i])
+}
+
+# join teams into one #
+all_opp_teams <- bind_rows(all_opp_ms_list)
+
+# remove unnecessary columns #
+opp_team_prof <- select(all_opp_teams, Team, MS, GAE_Pass, GAE_Dribble, E_Strong, GAC_Pass, GAC_Dribble, C_Strong, SP_High, Direct, Poss)
+
+# convert attack to defence #
+opp_team_prof <- mutate(opp_team_prof, ED = (100-E_Strong), CD = (100 - C_Strong), .keep = c("unused"))
+
+# transform from wide to long #
+opp_team_prof_long <- opp_team_prof %>%
+  pivot_longer(cols = GAE_Pass:CD,
+               names_to = "Category",
+               values_to = "Prop")
+
+# categories #
+t <- c("Direct", "Poss")
+ed <- c("ED")
+GAE <- c("GAE_Dribble", "GAE_Pass")
+cd <- c("CD")
+GAC <- c("GAC_Dribble", "GAC_Pass")
+SP <- c("SP_High")
+
+# add new column identifying moment of play #
+opp_team_prof_long <- opp_team_prof_long %>%
+  mutate(
+    MOP = case_when(
+      Category %in% ed ~ "ED",
+      Category %in% cd ~ "CD",
+      Category %in% SP ~ "SP",
+      Category %in% t ~ "Tempo",
+      Category %in% GAE ~ "GAE",
+      Category %in% GAC ~"GAC"
+    )
+  )
+
+# change MOP to factor and reorder variables #
+opp_team_prof_long$MOP <- factor(opp_team_prof_long$MOP, levels = c("GAE", "ED", "GAC", "CD", "SP", "Tempo"))
+
+
+# switch match status from opposition to team perspective #
+opp_team_prof_long <- mutate(opp_team_prof_long, ms = ifelse(opp_team_prof_long$MS == "Winning", "Losing", NA))
+opp_team_prof_long <- mutate(opp_team_prof_long, ms = ifelse(opp_team_prof_long$MS == "Losing", "Winning", opp_team_prof_long$ms))
+opp_team_prof_long <- mutate(opp_team_prof_long, ms = ifelse(opp_team_prof_long$MS == "Drawing", "Drawing", opp_team_prof_long$ms))
+
+# select columns for analysis #
+opp_team_prof_long <- select(opp_team_prof_long, Team, ms, Category, Prop, MOP)
+
+# rename ms #
+opp_team_prof_long <- rename(opp_team_prof_long, "MS" = "ms")
+
+# save data frame #
+write_xlsx(opp_team_prof_long, "Data/Processed Data//Def_Game_Styles_Women.xlsx")
+
+opp_team_prof_long2 <- head(opp_team_prof_long)
+knitr::kable(opp_team_prof_long2, caption = "Opposition Team Game Style Profiles")
+```
+
+### MATCH OUTCOMES
+#### 37. IDENTIFY GAME STYLE PER MATCH
+##### Import results list, tidy and join to game style results
+```{r match outcome}
+# import data #
+results <- read_excel("Data/Raw Data Women//Women 2019 Results.xlsx")
+
+# add new column match_team and match_opp #
+results <- unite(results, Match_Team, c(Match, Team), sep = "_", remove = FALSE )
+results <- unite(results, Match_Opp, c(Match, Opposition), sep = ": ", remove = FALSE )
+
+# convert match outcome to factor #
+results <- results %>%
+  mutate(Result_Code = ifelse(Result == "Win", 3, ifelse(Result == "Loss", 2, 1)))
+
+# join match outcome to game style results #
+mop_results <- inner_join(mop_c, results, by = "Match_Team")
+```
+
+##### Identify if game style type was used per match
+```{r match outcome2}
+
+# add new column identifying if game style was used #
+mop_results2 <- mutate(mop_results, E_Pass = ifelse(mop_results$GAE_Cluster == "1", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, E_Dribble = ifelse(mop_results2$GAE_Cluster == "2", "Yes", "No")) 
+
+mop_results2 <- mutate(mop_results2, E_Strong = ifelse(mop_results2$E_Cluster == "1", "Yes", "No")) 
+
+mop_results2 <- mutate(mop_results2, E_Poor = ifelse(mop_results2$E_Cluster == "2", "Yes", "No")) 
+
+mop_results2 <- mutate(mop_results2, C_Pass = ifelse(mop_results2$GAC_Cluster == "1", "Yes", "No")) 
+
+mop_results2 <- mutate(mop_results2, C_Dribble = ifelse(mop_results2$GAC_Cluster == "2", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, C_Poor = ifelse(mop_results2$C_Cluster == "1", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, C_Strong = ifelse(mop_results2$C_Cluster == "2", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, SP_Low = ifelse(mop_results2$SP_Cluster == "1", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, SP_High = ifelse(mop_results2$SP_Cluster == "2", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, Direct = ifelse(mop_results2$Tempo_Cluster == "1", "Yes", "No"))
+
+mop_results2 <- mutate(mop_results2, Poss = ifelse(mop_results2$Tempo_Cluster == "2", "Yes", "No"))
+
+# transform from wide to long #
+mop_results_long <- mop_results2 %>%
+  pivot_longer(cols = E_Pass:Poss,
+               names_to = "Category",
+               values_to = "Id")
+
+# game style categories #
+t<-c("Direct", "Poss")
+ea<-c("E_Strong", "E_Poor")
+GAE<-c("E_Dribble", "E_Pass")
+ca<-c("C_Strong", "C_Poor")
+GAC<-c("C_Dribble", "C_Pass")
+SP<-c("SP_High", "SP_Low")
+
+# add new column identifying moment of play #
+mop_results_long <- mop_results_long %>%
+  mutate(
+    MOP = case_when(
+      Category %in% ea ~ "Established Attack",
+      Category %in% ca ~ "Counter Attack",
+      Category %in% SP ~ "Set Piece",
+      Category %in% t ~ "Tempo",
+      Category %in% GAE ~ "Established Game Actions",
+      Category %in% GAC ~ "Counter Game Actions"
+    )
+  )
+
+# save data frame #
+write_xlsx(mop_results_long, "Data/Processed Data//Match_Outcome_Women.xlsx")
+
+mop_results_long2 <- head(mop_results_long)
+knitr::kable(mop_results_long2[c(1, 20:24)], caption = "Game Style Types per Match Outcome")
+```
+
+##### Create table on goals for and against
+```{r match outcome3}
+# add new column with opposition score as negative number #
+results2 <- mutate(results, Score_Opp = Score_Opp*-1)
+
+# transform form wide to long #
+results2 <- results2 %>%
+  pivot_longer(cols = Score_Team:Score_Opp,
+               names_to = "Score",
+               values_to = "Goals")
+
+# save data frame #
+write_xlsx(results2, "Data/Processed Data//Goals_Women.xlsx")
+
+results22 <- head(results2)
+knitr::kable(results22, caption = "Goals For and Against")
+```
+
