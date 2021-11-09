@@ -15,6 +15,6 @@ In Game Events: https://rpubs.com/felicitylord/in-game-events
 Visualisatons were then produced, in RStudio, to effectively communicate the insight gained from the data analysis. 
 A shiny application was developed to be able to share the results easily and effectively and allow users to enage with the results. 
 The ui and server files are provided to illustrate the steps taken to create each visualisation and the design and layout of the app.
-The final app is able to be viewed at https://felicity4.shinyapps.io/Hockey101/ 
+The final app is able to be viewed at https://felicity4.shinyapps.io/Hockey101/ or by scanning the QR code below
 
 ![QR code](https://user-images.githubusercontent.com/90300193/140863647-629202f7-f035-4de0-a930-b346edc42c36.png)
